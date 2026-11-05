@@ -4,35 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Production-style RAG FAQ service for ThirdShotHub (pickleball e-commerce), built for a Udacity LLM Ops capstone. `INSTRUCTIONS.md` lists the 9 graded deliverables; `WRITEUP.template.md` is the submission template.
 
-## Repository layout
-
-The project is split across two directories:
-
-- **Repo root:** `Makefile`, `pyproject.toml`, `uv.lock`, `.env.example`, `.venv/`, docs.
-- **`code/starter/`:** `src/`, `tests/`, `scripts/`, `prompts/`, `data/`.
-
-`make` targets assume everything is in one directory, so `make test` from the root collects no tests, and targets that run `scripts/` or `src.gateway.app` also can't find them. Run the commands below from `code/starter/` instead. Update this section if the two directories are merged.
-
 ## Commands
 
-Run from `code/starter/`:
+Run from the repo root:
 
 ```bash
-PY=../../.venv/bin/python
+make setup      # uv sync
+make test       # no API keys or network needed
+make load-data  # embed data/products into Chroma (needs OPENAI_API_KEY in .env)
+make serve      # API on :8080, Phoenix UI on :6006
 
-# Tests: no API keys or network needed
-PYTHONPATH=. $PY -m pytest tests -q
-PYTHONPATH=. $PY -m pytest tests/gateway/test_routes.py::test_health_returns_ok -q
-PYTHONPATH=. $PY -m pytest tests/gateway/test_routes.py -k health -q
-
-# Load the product corpus into Chroma, then serve on :8080 (Phoenix UI on :6006)
-PYTHONPATH=. $PY scripts/load_data.py
-PYTHONPATH=. $PY -m uvicorn src.gateway.app:app --reload --reload-dir src --port 8080
+# Single test
+uv run pytest tests/gateway/test_routes.py::test_health_returns_ok -q
+uv run pytest tests/gateway/test_routes.py -k health -q
 ```
 
-Other entry points are in `scripts/`; the `Makefile` documents each one and its flags. Install dependencies with `uv sync` from the repo root. No linter or formatter is configured.
+`make help` lists the other targets. Scripts run outside `make` need `PYTHONPATH=.`. No linter or formatter is configured.
 
-**Costs money:** `run_eval.py` (~$0.03) and `eval_topk_sweep.py` (~$0.10) make real OpenAI calls, so don't run them in a loop. Pass `--max-workers=1` (the Makefile default), because the Vocareum proxy throttles parallel calls and produces `nan` metrics. Vocareum keys have a lifetime budget.
+**Costs money:** `make eval` (~$0.03) and `make eval-topk-sweep` (~$0.10) make real OpenAI calls, so don't run them in a loop. Both default to one worker because the Vocareum proxy throttles parallel calls and produces `nan` metrics. Vocareum keys have a lifetime budget.
 
 ## Request flow
 
@@ -54,7 +43,7 @@ Other entry points are in `scripts/`; the `Makefile` documents each one and its 
 - **Slow imports:** importing `src.gateway` builds the LLM Guard scanners at module import, which loads transformer models and can take minutes. `tests/conftest.py` stubs them, along with Phoenix and the `chromadb` and `openai` constructors, before any test imports run. Test through pytest rather than ad hoc `python -c` imports.
 - **Standalone wrappers:** `guarded_route_query` and `cached_route_query` exist for tests and isolated exploration only. Changes to the production flow belong in `routes.py`.
 - **Inbox watcher runs in-process:** the FastAPI lifespan starts it because `chromadb.PersistentClient` has no cross-process cache invalidation. Running the watcher separately alongside the server leaves the server's index stale until restart.
-- **Working directory matters:** `data/chroma`, `data/phoenix`, `data/cost_log.jsonl` and `data/inbox` resolve relative to the current directory. `prompts/` resolves relative to the source file.
+- **Working directory matters:** `data/chroma`, `data/phoenix`, `data/cost_log.jsonl` and `data/inbox` resolve relative to the current directory, so run from the repo root. `prompts/` resolves relative to the source file.
 - **Tracing backend:** `src/tracing/__init__.py` picks it at import time from `TRACING_BACKEND` (`phoenix` or `none`). Spans go to the `llm-ops-capstone` Phoenix project, not `default`.
 - **Classifier fallback:** bad JSON from the classifier routes to the complex tier, so check this first if routing skews toward `gpt-4o`.
 - **`blocked_by` is not always a block:** `pii_redacted: ...` is an annotation on a successful answer. Presidio often flags brand names like "Selkirk" as `person`.
