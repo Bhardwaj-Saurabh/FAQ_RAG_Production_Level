@@ -800,7 +800,7 @@ written to the cost log. Phoenix recorded 16 classifier calls averaging
 
 So tiered routing itself saved about 48% on this traffic, and the
 classifier pays for itself many times over: it costs about $0.00004
-and saves about $0.0045 each time it sends a question to `gpt-4o-mini`
+and saves about $0.0039 each time it sends a question to `gpt-4o-mini`
 instead of `gpt-4o`. This traffic was deliberately mixed for testing
 (42% complex). With the 70/20 simple/complex mix that
 `make seed-cost-log` assumes, the share of cheap answers is higher, so
