@@ -51,12 +51,76 @@ explain what you changed and why.
 > /query` whose `sources[].doc_id` matches at least one of the new
 > products.
 
-- New products added (list filenames or `doc_id`s):
-- One curl response showing retrieval includes a new product:
+- New products added (list filenames or `doc_id`s): five ThirdShotHub house-brand
+  products, one per category, each with one feature no other product has so a
+  retrieval check is unambiguous. `make load-data` reported 35 chunks upserted.
+
+  | `doc_id` | File | Category | Distinguishing feature |
+  |---|---|---|---|
+  | `prod_031` | `prod_031_tsh_kitchen_pro_14.json` | paddles | Magnetic tungsten weight ports |
+  | `prod_032` | `prod_032_tsh_cold_court_40.json` | balls | Cold-weather polymer rated to 35°F |
+  | `prod_033` | `prod_033_tsh_courtside_cooler_pack.json` | bags | Insulated cooler compartment |
+  | `prod_034` | `prod_034_tsh_sideline_glide_wide.json` | shoes | 2E and 4E widths |
+  | `prod_035` | `prod_035_tsh_sunguard_hooded_ls.json` | apparel | UPF 50+ with hood |
+
+  Each product ranks first in retrieval for a question about its feature.
+  Products `prod_026`–`prod_030` came with the starter clone; `prod_031`–`prod_035`
+  are the additions.
+
+- One curl response showing retrieval includes a new product (`prod_031` is the
+  top source):
+
+```bash
+curl -X POST http://localhost:8080/query \
+  -H 'Content-Type: application/json' \
+  -d '{"question": "Which paddle lets me adjust swing weight with magnetic weight ports?"}'
+```
 
 ```json
-// paste POST /query response with `sources[*].doc_id` matching one of your additions
+{
+  "answer": "The paddle that lets you adjust swing weight with magnetic weight ports is the **ThirdShotHub Kitchen Pro 14 Tunable**. It features four magnetic tungsten weight ports along the edge guard, allowing you to add or remove 2-gram weights in seconds to shift the balance toward the head for more drive power or toward the handle for faster hands at the kitchen line.",
+  "sources": [
+    {
+      "doc_id": "prod_031",
+      "chunk_text": "ThirdShotHub Kitchen Pro 14 Tunable\n\nThe ThirdShotHub Kitchen Pro 14 Tunable is our house-brand control paddle for players who like to experiment with swing weight. Four magnetic tungsten weight ports along the edge guard let you add or remove 2-gram weights in seconds, so you can shift the balance toward the head for more drive power or toward the handle for faster hands at the kitchen line. A 14 mm polypropylene honeycomb core and textured carbon fiber face keep it crisp and spin-friendly, and the core carries a lifetime warranty against delamination.\n\nPrice: $139.99 USD\n\nSpecifications:\n  weight: 7.8 oz base (up to 8.3 oz with all weights installed)\n  grip_size: 4.25 in\n  face_material: Textured T700 carbon fiber\n  core: 14 mm polypropylene honeycomb\n  shape: hybrid\n  length: 16.25 in\n  width: 7.75 in\n  weight_ports: 4 magnetic ports, includes 8 x 2 g tungsten weights\n  warranty: Lifetime core warranty against delamination\n\nCare instructions: Wipe the face with a damp microfiber cloth after play and let it dry before covering. Keep the magnetic weights in the included case when not installed, and never leave the paddle in a hot car.",
+      "similarity_score": 0.626191611247493
+    },
+    {
+      "doc_id": "prod_020",
+      "chunk_text": "Tourna Lead Tape Roll\n\nTourna Lead Tape lets you customize your paddle's weight and balance point. Apply strips to the head for more power or to the handle for better control. The adhesive backing sticks firmly and can be repositioned during experimentation. Each roll provides enough tape for 4-6 paddle applications.\n\nPrice: $6.99 USD\n\nSpecifications:\n  material: Adhesive-backed lead alloy\n  dimensions: 1/4 in x 72 in roll\n  features: ['Repositionable adhesive', 'Easy to cut with scissors', '0.25 oz per 6-inch strip']\n\nCare instructions: Apply to a clean, dry paddle surface for best adhesion. Cover with electrical tape for a smoother feel and to prevent the lead tape from peeling during play.",
+      "similarity_score": 0.46672858323905564
+    },
+    {
+      "doc_id": "prod_007",
+      "chunk_text": "Selkirk Vanguard Power Air\n\nThe Selkirk Vanguard Power Air represents the pinnacle of paddle engineering. Featuring a proprietary air-injected polypropylene core and a carbon fiber face with QuadFlex 4-layer construction, it delivers unmatched power without sacrificing spin or control. Built for tournament-level play.\n\nPrice: $249.99 USD\n\nSpecifications:\n  weight: 8.4 oz\n  grip_size: 4.25 in\n  face_material: QuadFlex 4-layer carbon fiber\n  core: Air-injected polypropylene\n  shape: elongated\n  length: 16.5 in\n  width: 7.375 in\n\nCare instructions: Clean with a microfiber cloth dampened with water. Avoid chemical cleaners that may degrade the carbon fiber surface. The edge guard is replaceable — contact Selkirk for parts.",
+      "similarity_score": 0.4443360005985857
+    },
+    {
+      "doc_id": "prod_003",
+      "chunk_text": "Engage Pursuit MX\n\nThe Engage Pursuit MX features a proprietary ControlPro polymer core that delivers unmatched touch and feel for dinking and soft game strategies. The textured fiberglass face adds spin capability without sacrificing control, making it a favorite among players who prioritize finesse over raw power.\n\nPrice: $159.99 USD\n\nSpecifications:\n  weight: 7.5 oz\n  grip_size: 4.25 in\n  face_material: Textured fiberglass\n  core: ControlPro polymer\n  shape: widebody\n  length: 15.5 in\n  width: 8.125 in\n\nCare instructions: Wipe down with a damp cloth after each session. The textured face can collect debris — use a soft brush for deeper cleaning. Avoid exposing the paddle to temperatures above 120°F.",
+      "similarity_score": 0.4440894953833977
+    },
+    {
+      "doc_id": "prod_005",
+      "chunk_text": "HEAD Radical Tour\n\nThe HEAD Radical Tour brings tennis engineering expertise to the court. Featuring an Extreme Spin Texture (EST) face and an Optimized Tubular Construction (OTC) frame, this paddle delivers consistent power from edge to edge with a generous sweet spot suited to all-court players.\n\nPrice: $149.99 USD\n\nSpecifications:\n  weight: 8.1 oz\n  grip_size: 4.25 in\n  face_material: Extreme Spin Texture (EST) composite\n  core: Polypropylene honeycomb\n  shape: standard\n  length: 15.875 in\n  width: 7.875 in\n\nCare instructions: Wipe with a clean damp cloth. Inspect the edge guard periodically for cracks and replace if damaged to protect the core. Store away from moisture.",
+      "similarity_score": 0.43761839995882357
+    }
+  ],
+  "confidence": 0.48379281808547103,
+  "model": "gpt-4o-mini",
+  "tokens": {
+    "prompt_tokens": 1345,
+    "completion_tokens": 74
+  },
+  "cost_usd": 0.00024615,
+  "cached": false,
+  "trace_id": null,
+  "blocked_by": null
+}
 ```
+
+This response came from a server run with `TRACING_BACKEND=none`, so `trace_id`
+is `null`; §2 Part A shows a traced response.
 
 ## Deliverable 2 — RAG Pipeline With Structured Output + Top-k Sweep
 
