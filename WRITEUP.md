@@ -237,6 +237,88 @@ Run: 30 golden questions per setting, `EVAL_MAX_WORKERS=1`, no `nan` cells.
 | (simple) How should I clean the HEAD Radical Tour paddle? | simple | gpt-4o-mini | 0.00031 |
 | (complex) I'm a beginner on a budget under $120. Which paddle and balls should I buy for outdoor play? | complex | gpt-4o | 0.00486 |
 
+The three questions from the brief, with the `model` field and the main
+response fields from each `POST /query` (sources shortened to `doc_id`
+and similarity). `.env` maps `MODEL_SIMPLE=gpt-4o-mini` and
+`MODEL_COMPLEX=gpt-4o`:
+
+```bash
+# Simple — classified simple → gpt-4o-mini
+curl -X POST http://localhost:8080/query \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"What is the weight of the Selkirk AMPED S2?"}' | jq .model
+# → "gpt-4o-mini"
+# {
+#   "answer": "The Selkirk AMPED S2 weighs 7.8 oz.",
+#   "model": "gpt-4o-mini",
+#   "tokens": {
+#     "prompt_tokens": 1528,
+#     "completion_tokens": 15
+#   },
+#   "cost_usd": 0.0002382,
+#   "cached": false,
+#   "trace_id": "609b1c0b7ac39bd1cd60937714369143",
+#   "blocked_by": null,
+#   "sources": [
+#     "prod_001 (0.622)",
+#     "prod_007 (0.423)",
+#     "prod_012 (0.414)",
+#     "prod_029 (0.333)",
+#     "prod_026 (0.330)"
+#   ]
+# }
+
+# Complex — classified complex → gpt-4o
+curl -X POST http://localhost:8080/query \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"Compare the Selkirk Vanguard Power Air and the JOOLA Hyperion CFS 16 for a player with arm fatigue who wants tournament-grade power."}' | jq .model
+# → "gpt-4o"
+# {
+#   "answer": "When considering the Selkirk Vanguard Power Air and the JOOLA Hyperion CFS 16, here are some key factors for a player with arm fatigue who desires tournament-grade power:\n\n### Selkirk Vanguard Power Air\n- **Weight:** 8.4 oz\n- **Core:** Air-injected polypropylene\n- **Face Material:** QuadFlex 4-layer carbon fiber\n- **Shape:** Elongated\n- **Length/Width:** 16.5 in / 7.375 in\n\n### JOOLA Hyperion CFS 16\n- **Weight:** 8.2 oz\n- **Core:** Reactive honeycomb polymer\n- **Face Material:** Carbon Friction Surface\n- **Shape:** Elongated\n- **Length/Width:** 16.5 in / 7.5 in\n\n### Considerations:\n- **Weight:** Both paddles have similar weights, with the JOOLA Hyperion CFS 16 being slightly lighter at 8.2 oz compared to the 8.4 oz of the Selkirk. A lighter paddle could be marginally easier on the arm over extended play.\n- **Power Features:** \n  - The Selkirk Vanguard Power Air is designed to deliver unmatched power with its air-injected core and focuses on combining power with spin and control.\n  - The JOOLA Hyperion CFS 16 offers maximum spin and power with its Carbon Friction Surface.\n- **Core Material:** The Selkirk's air-injected core might offer a different feel that could potentially mitigate arm fatigue by absorbing some impact.\n  \nOverall, if arm fatigue is a significant concern, the slightly lighter JOOLA Hyperion CFS 16 might offer a small advantage in terms of ease of handling. However, both paddles are aimed at providing tournament-grade power, so considering the overall feel and personal preference will be important.",
+#   "model": "gpt-4o",
+#   "tokens": {
+#     "prompt_tokens": 1552,
+#     "completion_tokens": 380
+#   },
+#   "cost_usd": 0.00768,
+#   "cached": false,
+#   "trace_id": "e9948482e04ce33e0b925334fa8d3a8a",
+#   "blocked_by": null,
+#   "sources": [
+#     "prod_007 (0.646)",
+#     "prod_002 (0.588)",
+#     "prod_001 (0.510)",
+#     "prod_027 (0.486)",
+#     "prod_026 (0.478)"
+#   ]
+# }
+
+# Borderline — classified complex → gpt-4o
+curl -X POST http://localhost:8080/query \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"Is the Engage Pursuit MX a forgiving choice for someone who plays casually on weekends?"}' | jq .model
+# → "gpt-4o"
+# {
+#   "answer": "The Engage Pursuit MX is designed for players who prioritize finesse and control, thanks to its ControlPro polymer core and textured fiberglass face. This makes it an excellent choice if your casual weekend play involves dinking and soft game strategies. However, if you're looking for a paddle that's more forgiving with a larger sweet spot and easier maneuverability, you might consider options like the Paddletek Bantam TS-5, which is noted for being forgiving and easy to handle with its lightweight polymer core and fiberglass composite face.",
+#   "model": "gpt-4o",
+#   "tokens": {
+#     "prompt_tokens": 1380,
+#     "completion_tokens": 103
+#   },
+#   "cost_usd": 0.00448,
+#   "cached": false,
+#   "trace_id": "6fc746079edb3890ffa5e2d82ed88c27",
+#   "blocked_by": null,
+#   "sources": [
+#     "prod_003 (0.612)",
+#     "prod_006 (0.383)",
+#     "prod_026 (0.375)",
+#     "prod_001 (0.373)",
+#     "prod_018 (0.359)"
+#   ]
+# }
+```
+
 Classifications come from the `query_type` field in `data/cost_log.jsonl`;
 models and costs come from the `POST /query` responses. Every response had
 `cached: false` and `blocked_by: null`, so each one went through the
@@ -375,8 +457,22 @@ curl -X POST http://localhost:8080/query \
   | `bad_oversized.json` | Valid product padded to 308,066 bytes | `file exceeds 262144-byte limit (308066 bytes)` |
 
   ```text
+  $ ls -l data/inbox/failed/   # size in bytes, name
+  672 bad_invalid_json.json
+  92 bad_invalid_json.json.error.txt
+  758 bad_missing_price.json
+  34 bad_missing_price.json.error.txt
+  308066 bad_oversized.json
+  45 bad_oversized.json.error.txt
+
   $ cat data/inbox/failed/bad_missing_price.json.error.txt
   missing required fields: ['price']
+
+  $ cat data/inbox/failed/bad_invalid_json.json.error.txt
+  invalid JSON: Expecting property name enclosed in double quotes: line 15 column 3 (char 619)
+
+  $ cat data/inbox/failed/bad_oversized.json.error.txt
+  file exceeds 262144-byte limit (308066 bytes)
   ```
 
   The invalid-JSON file is also missing `price`, but the watcher stops at
@@ -644,6 +740,30 @@ gets a refusal, not wrong information), but each costs a real answer.
 | 10 | `e0edd94c` | What face material does the Chorus Shapeshifter SX use? | gpt-4o-mini | 2722.0 | 1792 | 48 | ChatCompletion | 2074.2 |
 | 11 | `12820c18` | How long is the handle on the JOOLA Ben Johns Perseus 3S 16mm? | gpt-4o-mini | 2320.9 | 1624 | 25 | ChatCompletion | 1619.7 |
 | 12 | `bfc10210` | What is the price of the HEAD Radical Tour paddle? | gpt-4o-mini | 2347.2 | 1548 | 15 | ChatCompletion | 1601.5 |
+
+  Raw `make show-traces` output, taken straight after the 12 requests. It
+  lists the 10 most recent traces of any kind, so classifier, judge and
+  embedding calls appear alongside the two most recent request traces
+  (`7fe3cf01` and `3a4a868b`, both also in the table above):
+
+```
+# Phoenix Trace Export
+
+79 trace(s) captured. Showing the most recent 10.
+
+| # | Trace ID | Question | Model | Latency (ms) | Prompt tok | Compl. tok | Slowest child | Slowest (ms) |
+|---|---|---|---|---|---|---|---|---|
+| 1 | `4eba7bf7` | {"messages": [{"role": "user", "content": "You are a fact-checking judge for a c | — | 0.0 | 0 | 0 | ChatCompletion | 1677.7 |
+| 2 | `7fe3cf01` | What colors does the Lija Rally Skort come in? | gpt-4o-mini | 2935.4 | 1246 | 27 | ChatCompletion | 2312.8 |
+| 3 | `905e0108` | {"messages": [{"role": "user", "content": "Classify the following customer query | — | 0.0 | 0 | 0 | ChatCompletion | 1588.9 |
+| 4 | `0118f38e` | {"input": ["What colors does the Lija Rally Skort come in?"], "model": "text-emb | — | 0.0 | 0 | 0 | CreateEmbeddings | 645.5 |
+| 5 | `886b9f84` | {"input": ["I play in hot weather and sweat a lot. What grip and apparel would y | — | 0.0 | 0 | 0 | CreateEmbeddings | 1133.4 |
+| 6 | `eb979f25` | {"messages": [{"role": "user", "content": "You are a fact-checking judge for a c | — | 0.0 | 0 | 0 | ChatCompletion | 1810.6 |
+| 7 | `3a4a868b` | I play in hot weather and sweat a lot. What grip and apparel would you recommend | gpt-4o | 3167.0 | 1237 | 239 | ChatCompletion | 2593.9 |
+| 8 | `ea7b69ae` | {"messages": [{"role": "user", "content": "Classify the following customer query | — | 0.0 | 0 | 0 | ChatCompletion | 1635.0 |
+| 9 | `4e88d73e` | {"input": ["I play in hot weather and sweat a lot. What grip and apparel would y | — | 0.0 | 0 | 0 | CreateEmbeddings | 717.5 |
+| 10 | `c54a8692` | {"input": ["What size is the Tourna Lead Tape Roll?"], "model": "text-embedding- | — | 0.0 | 0 | 0 | CreateEmbeddings | 626.8 |
+```
 
   One trace expanded, `09d0d939…` (the hopper-versus-net comparison,
   routed to `gpt-4o`):
