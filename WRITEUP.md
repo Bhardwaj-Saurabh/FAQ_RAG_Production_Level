@@ -866,3 +866,144 @@ Manual: 12 items to verify in a real environment
   contains `sk-`. As a stronger check, I searched every diff in the full
   history (`git log --all -p`) and every commit's tree for the actual key
   value from my local `.env`: 0 occurrences.
+
+---
+
+## Appendix — Stand-out Work (optional)
+
+### Stand-out: Semantic Cache
+
+**Summary.** I sent one question and five rewordings about the same
+product to the live `/query` route. Four of the five rewordings were
+served from the cache (`cached: true`) in about 0.7 s instead of about
+9 s. The sixth question asks something different and was correctly not
+served from the cache.
+
+Question #1 primes the cache; #2–#5 reword it; #6 asks a different
+question (a yes/no about fitting 6 paddles *and* shoes) that a correct
+cache must not answer with #1's response. Similarity is the cosine
+similarity of each question's embedding to the cached question #1
+(threshold 0.85).
+
+| # | Question | Similarity to #1 | `cached` | Latency (ms) |
+|---|---|---:|---|---:|
+| 1 | How many paddles can the JOOLA Tour Elite Pro Duffel hold? | 1.000 | `false` | 9,164 |
+| 2 | How many paddles fit in the JOOLA Tour Elite Pro Duffel? | 0.956 | `true` | 719 |
+| 3 | JOOLA Tour Elite Pro Duffel paddle capacity? | 0.887 | `true` | 729 |
+| 4 | What is the paddle capacity of the JOOLA Tour Elite Pro Duffel bag? | 0.921 | `true` | 719 |
+| 5 | How many paddles does the JOOLA Tour Elite Pro Duffel carry? | 0.967 | `true` | 703 |
+| 6 | Can the JOOLA Tour Elite Pro Duffel carry 6 paddles and my shoes? | 0.844 | `false` | 8,808 |
+
+Six curl outputs:
+
+```bash
+# 1
+curl -s -X POST http://localhost:8080/query -H 'Content-Type: application/json' \
+  -d '{"question": "How many paddles can the JOOLA Tour Elite Pro Duffel hold?"}' | jq '{cached, answer}'
+# → cached: false, answer: "The JOOLA Tour Elite Pro Duffel can hold up to 6 paddles, each with individual protective sleeves."
+# 2
+curl -s -X POST http://localhost:8080/query -H 'Content-Type: application/json' \
+  -d '{"question": "How many paddles fit in the JOOLA Tour Elite Pro Duffel?"}' | jq '{cached, answer}'
+# → cached: true, answer: "The JOOLA Tour Elite Pro Duffel can hold up to 6 paddles, each with individual protective sleeves."
+# 3
+curl -s -X POST http://localhost:8080/query -H 'Content-Type: application/json' \
+  -d '{"question": "JOOLA Tour Elite Pro Duffel paddle capacity?"}' | jq '{cached, answer}'
+# → cached: true, answer: "The JOOLA Tour Elite Pro Duffel can hold up to 6 paddles, each with individual protective sleeves."
+# 4
+curl -s -X POST http://localhost:8080/query -H 'Content-Type: application/json' \
+  -d '{"question": "What is the paddle capacity of the JOOLA Tour Elite Pro Duffel bag?"}' | jq '{cached, answer}'
+# → cached: true, answer: "The JOOLA Tour Elite Pro Duffel can hold up to 6 paddles, each with individual protective sleeves."
+# 5
+curl -s -X POST http://localhost:8080/query -H 'Content-Type: application/json' \
+  -d '{"question": "How many paddles does the JOOLA Tour Elite Pro Duffel carry?"}' | jq '{cached, answer}'
+# → cached: true, answer: "The JOOLA Tour Elite Pro Duffel can hold up to 6 paddles, each with individual protective sleeves."
+# 6
+curl -s -X POST http://localhost:8080/query -H 'Content-Type: application/json' \
+  -d '{"question": "Can the JOOLA Tour Elite Pro Duffel carry 6 paddles and my shoes?"}' | jq '{cached, answer}'
+# → cached: false, answer: "Yes, the JOOLA Tour Elite Pro Duffel can carry 6 paddles, as it includes individual protective sleeves for each paddle. Additionally, it has a ventilated shoe compartment for your shoes. \n\nHere are some key details:\n- **Holds up to 6 paddles** with individual protective sleeves\n- **Ventilated shoe compartment** for footwear\n- **Dimensions:** 24 x 14 x 12 in\n- **Price:** $119.99 USD \n\nThis bag is designed for serious competitors requiring maximum organization."
+```
+
+Cache inspection (the brief's script; it lists the 10 oldest entries,
+and expired entries stay stored until a lookup reaches them, because
+TTL is enforced lazily on read):
+
+```
+cache entries: 30
+Which paddle lets me adjust swing weight with magnetic weight ports?
+TODO: a question only a new product can answer
+Which paddle lets me adjust swing weight with magnetic weight ports?
+My email is [REDACTED_EMAIL]. What grip size and core thickness does the JOOLA Hyperion CFS 16 have?
+What is the weight of the Selkirk AMPED S2?
+Compare the Selkirk Vanguard Power Air and the JOOLA Hyperion CFS 16 for a player with arm fatigue who wants tournament-grade power.
+Is the Engage Pursuit MX a forgiving choice for someone who plays casually on weekends?
+How much does a pack of Franklin X-40 Outdoor Pickleballs cost?
+How should I clean the HEAD Radical Tour paddle?
+I'm a beginner on a budget under $120. Which paddle and balls should I buy for outdoor play?
+```
+
+The two JOOLA Tour Elite Pro Duffel entries (cache misses #1 and #6;
+hits are not stored again):
+
+```
+question='How many paddles can the JOOLA Tour Elite Pro Duffel hold?'      ttl_s=3600
+question='Can the JOOLA Tour Elite Pro Duffel carry 6 paddles and my shoes?' ttl_s=3600
+```
+
+**Trade-off.** The default threshold of 0.85 did its job on this test,
+but with a thin margin. The tersest rewording ("…paddle capacity?") hit
+at 0.887, and the genuinely different question #6 missed at 0.844, only
+0.006 below the threshold. At 0.84, #6 would have received #1's answer,
+which never addresses the shoes. Product-attribute questions are short
+and dominated by the product name, so a single threshold has little room
+between "rewording" and "different question about the same product".
+Safer options would be to cache per product and attribute, or to
+re-check a hit with a cheap judge before serving it. Each hit saved one
+classifier, generation and judge call: about $0.0005 and 8 s here.
+
+### Stand-out: Streaming / TTFT
+
+**Summary.** `compare_ttft` reports a 72.5% average improvement in time
+to first token for streaming over blocking on three new questions. That
+overstates the gain, because its streaming timer starts after retrieval.
+With retrieval inside both timers, streaming still cut time to first
+token by 36.3% on average, and more for longer answers.
+
+`compare_ttft` output (as shipped, model `gpt-4o`, `top_k=5`):
+
+| Question | Blocking (ms) | Streaming TTFT (ms) | Streaming total (ms) | TTFT improvement (ms) | Improvement |
+|---|---:|---:|---:|---:|---:|
+| What does the PBPro Portable Net System come with? | 3,425 | 970 | 1,518 | 2,455 | 71.7% |
+| Which shoes have the best traction for outdoor hard courts? | 2,602 | 889 | 1,888 | 1,714 | 65.9% |
+| Explain the difference between the Selkirk Team Backpack and the JOOLA Tour Elite Pro Duffel for a weekend tournament player. | 4,240 | 844 | 4,044 | 3,397 | 80.1% |
+| **Average** | | | | **2,522** | **72.5%** |
+
+**Why I re-measured.** In `src/optimization/streaming.py`, the blocking
+timer wraps `run_pipeline`, which includes retrieval (about 0.6 s of query
+embedding, from Deliverable 7), while `measure_ttft_streaming` calls
+`retrieve()` before starting its timer. Streaming also runs second, after
+blocking has sent the same prompt, so OpenAI's automatic prompt caching
+can shorten its first token. I re-measured on three different new
+questions, with retrieval inside both timers and streaming run first:
+
+| Question | Blocking (ms) | Streaming TTFT (ms) | Streaming total (ms) | TTFT improvement (ms) | Improvement |
+|---|---:|---:|---:|---:|---:|
+| How do I care for the Lija Rally Skort? | 2,234 | 1,833 | 2,567 | 401 | 18.0% |
+| What makes the HEAD Radical Tour different from the Selkirk AMPED S2? | 3,994 | 1,440 | 3,727 | 2,554 | 63.9% |
+| Which bag should I buy if I carry four paddles and a laptop? | 2,165 | 1,583 | 2,749 | 582 | 26.9% |
+| **Average** | **2,798** | **1,619** | **3,014** | **1,179** | **36.3%** |
+
+**Findings.**
+
+- Streaming shows the first token about 1.2 s sooner on average (36%).
+  The gain grows with answer length: 18% for a short care-instructions
+  answer, 64% for a multi-product comparison. For one-line lookups it
+  hardly matters.
+- Total time is unchanged (3.0 s streamed against 2.8 s blocking), so
+  streaming improves perceived latency, not throughput or cost.
+- On the HTTP routes the picture differs again. `/query/stream` still
+  runs the input guards and the classifier (about 1.7 s, from
+  Deliverable 7) before the first token, so users wait longer than these
+  pipeline-level numbers suggest. It also skips the hallucination judge
+  (about 1.7 s after generation on `/query`), which is a real part of its
+  speed advantage and a trade-off: streamed answers are not checked for
+  unsupported claims before the customer sees them.
