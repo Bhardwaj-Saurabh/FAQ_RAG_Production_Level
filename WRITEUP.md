@@ -1,33 +1,23 @@
 # WRITEUP — Production LLM FAQ Service
 
-> **How to use this template.** Copy this file to `WRITEUP.md` (drop
-> the `.template`) and fill in each section with the evidence the
-> rubric requires. Keep evidence inline (curl outputs, screenshots,
-> log excerpts) — a reviewer should be able to grade your submission
-> from this file alone.
->
-> **Recommended path:** with `make serve` running in another terminal,
-> run `make harvest-evidence` to generate `WRITEUP-draft.md` with §1–§8
-> mostly pre-populated. Copy that draft into `WRITEUP.md` and fill in
-> the analysis blocks the harvester leaves as `<!-- TODO: learner — … -->`
-> placeholders (the §2 top-k recommendation, the §5 threshold proposal,
-> the §7 slowest-step analysis, the §8 baseline-cost interpretation,
-> plus the §1 curl using one of YOUR new products). The harvester
-> captures pure-evidence sections; the writing remains yours.
->
-> Aim for ~1,500–3,000 words. Longer is fine if you include images.
-> Each `## Deliverable N` section maps to one row of
-> [`rubric.md`](rubric.md).
+A production-style retrieval-augmented FAQ service for ThirdShotHub, a
+pickleball e-commerce store. `POST /query` runs input guards (regex plus
+DeBERTa prompt-injection detection and Presidio PII redaction), a Chroma
+semantic cache, a `gpt-4o-mini` classifier that routes each question to
+`gpt-4o-mini` or `gpt-4o`, retrieval over a Chroma product index,
+generation, and an LLM-judge output guard. Every request is traced in
+Phoenix and costed in `data/cost_log.jsonl`. Each section below covers
+one rubric deliverable with the evidence inline. All outputs come from
+real runs against the live service between 5 and 10 November 2026.
 
 ## Setup snapshot
 
-- Python: `python --version`
-- Branch / commit: `git rev-parse --short HEAD` (the commit your
-  reviewer should clone)
-- Test suite: `make test` (paste the final line — should be ≥195
-  passing)
-- Verify: `make verify` (paste the "Automated: X passed, 0 failed"
-  line)
+- Python: 3.11.4 (`uv run python --version`)
+- Branch / commit: `main` at
+  https://github.com/Bhardwaj-Saurabh/FAQ_RAG_Production_Level. Tests and
+  verification ran at `a267629`; later commits change only `WRITEUP.md`.
+- Test suite: `make test` → `248 passed, 26 warnings in 1.30s`
+- Verify: `make verify` → `Automated: 4 passed, 0 failed`
 
 ## Substitutions from the proposal
 
@@ -36,11 +26,13 @@ you used the as-shipped stack (the default), just say so. If you swapped
 back to the proposal stack (Redis Stack / Langfuse / Guardrails AI),
 explain what you changed and why.
 
+I used the as-shipped stack for all three layers.
+
 | Layer | Proposal | Starter default | Your choice |
 |-------|----------|------------------|--------------|
-| Cache | Redis Stack | Chroma collection | _your choice_ |
-| Tracing | Langfuse Cloud | Phoenix in-process | _your choice_ |
-| Guardrails | Guardrails AI | LLM Guard + LLM judge | _your choice_ |
+| Cache | Redis Stack | Chroma collection | Chroma collection (as shipped) |
+| Tracing | Langfuse Cloud | Phoenix in-process | Phoenix in-process (as shipped) |
+| Guardrails | Guardrails AI | LLM Guard + LLM judge | LLM Guard + LLM judge (as shipped), plus 4 new regex patterns |
 
 ---
 
@@ -51,7 +43,9 @@ explain what you changed and why.
 > /query` whose `sources[].doc_id` matches at least one of the new
 > products.
 
-- New products added (list filenames or `doc_id`s): five ThirdShotHub house-brand
+**Summary.** I added five ThirdShotHub house-brand products (`prod_031`–`prod_035`), one per category, each with one feature no other product has. `make load-data` re-embedded the catalog (35 chunks), each new product ranks first for a question about its feature, and the `/query` response below cites `prod_031` as its top source.
+
+- **New products added:** five ThirdShotHub house-brand
   products, one per category, each with one feature no other product has so a
   retrieval check is unambiguous. `make load-data` reported 35 chunks upserted.
 
@@ -67,8 +61,7 @@ explain what you changed and why.
   Products `prod_026`–`prod_030` came with the starter clone; `prod_031`–`prod_035`
   are the additions.
 
-- One curl response showing retrieval includes a new product (`prod_031` is the
-  top source):
+- **Retrieval check** (`prod_031` is the top source):
 
 ```bash
 curl -X POST http://localhost:8080/query \
@@ -129,6 +122,8 @@ is `null`; §2 Part A shows a traced response.
 > RAGAS metrics per setting; a recommended `top_k` value whose
 > justification cites at least two per-metric deltas from the sweep
 > table.
+
+**Summary.** One `/query` response shows every `QueryResponse` field populated, including a real `trace_id`, `cached: false` and a `pii_redacted` annotation in `blocked_by`. The RAGAS sweep shows context recall rising from 0.844 to 0.933 between `top_k=5` and `top_k=10` at a small precision cost, so I recommend `top_k=10`.
 
 ### Part A — Structured-output curl
 
@@ -206,9 +201,7 @@ Run: 30 golden questions per setting, `EVAL_MAX_WORKERS=1`, no `nan` cells.
   - Δ context_precision from top_k=5 to top_k=10: **−0.009** (0.746 → 0.737); −0.024 from top_k=3
   - Δ answer_relevancy from top_k=5 to top_k=10: **+0.030** (0.832 → 0.862)
   - Δ faithfulness from top_k=5 to top_k=10: +0.006 (0.892 → 0.898)
-- **Why this `top_k`** (one paragraph weighing the deltas — e.g.,
-  recall improves at top_k=10 but precision drops, so we accept the
-  precision hit because hallucinations are bounded by §6 guardrails):
+- **Why this `top_k`:**
 
   top_k=10 gives the largest change in the sweep: context recall rises
   by 0.089 over top_k=5, so the retriever finds the facts the golden
@@ -232,6 +225,8 @@ Run: 30 golden questions per setting, `EVAL_MAX_WORKERS=1`, no `nan` cells.
 > one simple-fact and one complex / multi-product question; the
 > `model` field differs across captured outputs; the writeup names
 > the classification each query received.
+
+**Summary.** Six questions were routed sensibly: three single-fact lookups to `gpt-4o-mini`, two comparisons and recommendations to `gpt-4o`, and the borderline "forgiving for a casual player" question to `gpt-4o` (classified complex in all five repeat runs). A complex answer costs about 20–30 times a simple one.
 
 | Query | classification | model | cost_usd |
 |-------|---------------|-------|---------:|
@@ -276,14 +271,14 @@ recommendation in Deliverable 2.
 > visible in `POST /query` `sources`) and a quarantined failure with
 > `<name>.error.txt`.
 
+**Summary.** With `make serve` running, three valid product files dropped into `data/inbox/` were ingested within seconds and returned at rank 1 by `/query`, with no restart. Three malformed files (missing `price`, invalid JSON, over 256 KB) were moved to `data/inbox/failed/`, each with a `.error.txt` giving the reason.
+
 With `make serve` running, I copied six files into `data/inbox/`: three
 valid products and three malformed ones, one for each kind of quarantine.
 No restart was needed. The valid products were searchable straight away
 because the watcher runs inside the server process.
 
-- Successful ingestion: drop a valid JSON in `data/inbox/`, then run a
-  `POST /query` whose `sources` cites the new product. Paste both
-  files / responses.
+- **Successful ingestion.**
 
   | File | `doc_id` | Query | Rank in `sources` |
   |---|---|---|---|
@@ -369,8 +364,7 @@ curl -X POST http://localhost:8080/query \
 }
 ```
 
-- Quarantined failure: drop a malformed JSON, then paste the
-  `data/inbox/failed/<name>.error.txt` content.
+- **Quarantined failures.**
 
   Each bad file moved to `data/inbox/failed/` with a sibling `.error.txt`:
 
@@ -407,6 +401,8 @@ legitimate product answer; rephrasing the question got a normal answer.
 > range) from the eval run and states the action triggered on
 > violation.
 
+**Summary.** `make eval` scored faithfulness 0.859, answer relevancy 0.842, context recall 0.844 and context precision 0.748. Precision is lowest because superlative and recommendation questions need attribute comparisons that similarity search cannot do. I propose aggregate faithfulness ≥ 0.80, justified by this run's per-question distribution and the run-to-run spread, with a re-run and then a bisect of recent changes on violation.
+
 ### Aggregate metrics
 
 ```
@@ -429,7 +425,7 @@ Per-question distribution from the same run:
 | context_recall | 0.844 | 1.000 | 1.000 | 0.000 | 0.000 | 4 |
 | context_precision | 0.748 | 1.000 | 0.550 | 0.000 | 0.000 | 8 |
 
-### Analysis (all four bullets required)
+### Analysis
 
 - **Lowest-scoring metric:** context_precision, at 0.748. It is the only
   metric below 0.80, and 8 of the 30 questions scored under 0.5 on it.
@@ -493,7 +489,9 @@ Per-question distribution from the same run:
 > added pattern, include paired curls: one that triggers it
 > (`blocked_by` populated) and one that should not.
 
-- Patterns added (list with one-line description each): four new
+**Summary.** I added four regex prompt-injection patterns. On the live route each blocks its attack and lets through a legitimate question that shares its wording; one of the attacks had passed every guard before, including DeBERTa. On the output side, live testing produced one correct hallucination block and two false positives, recorded at the end of this section.
+
+- **Patterns added:** four new
   entries in `INJECTION_PATTERNS` (`src/guardrails/input_guards.py`),
   each for an attack the existing 11 patterns miss.
 
@@ -532,7 +530,7 @@ Per-question distribution from the same run:
   questions that share wording with the attacks (none may match). The
   full suite passes: 248 tests.
 
-- Paired curl examples per added pattern (actual outputs from the live
+- **Paired curl examples** (actual outputs from the live
   route; the legitimate questions all returned real answers):
 
 ```bash
@@ -619,10 +617,9 @@ gets a refusal, not wrong information), but each costs a real answer.
 > markdown; name the slowest pipeline step and quantify it as a
 > fraction of total request latency.
 
-- Either a Phoenix screenshot (with one trace expanded) **or** the
-  `make show-traces` markdown output for ≥10 queries.
+**Summary.** Twelve new questions produced twelve Phoenix traces. Answer generation is the slowest step in every trace: 2,218 ms on average, 77% of the traced pipeline and 27% of the full 8.3 s request. The three LLM calls together (classifier, generation, judge) take 68% of each request; the Chroma search is under 1%.
 
-  I sent 12 new questions (none asked earlier the same day, so none
+- **Trace evidence.** I sent 12 new questions (none asked earlier the same day, so none
   could hit the semantic cache) to `POST /query` with `make serve`
   running: 7 routed to `gpt-4o-mini` and 5 to `gpt-4o`. This is the
   `make show-traces` table for those 12 requests. A plain
@@ -680,7 +677,7 @@ gets a refusal, not wrong information), but each costs a real answer.
   | ML input guards, framework, other | 728 | 9% |
   | **Total HTTP request** | **8,336** | 100% |
 
-- Slowest step in your traces:
+- **Slowest step:**
   - Step name: answer generation, the `ChatCompletion` span inside
     `rag_query`. It is the slowest child span in all 12 traces.
   - Latency: 2,218 ms on average (1,485–3,872 ms). 1,918 ms on
@@ -689,7 +686,7 @@ gets a refusal, not wrong information), but each costs a real answer.
     (2,218 of 2,863 ms in `rag_query`) and **27% of the end-to-end HTTP
     request** (2,218 of 8,336 ms). In the expanded trace it is 86% of
     `rag_query` and 33% of that 11.8 s request.
-  - One sentence on why it's the slowest: generation is the only step
+  - Why it's the slowest: generation is the only step
     that produces a long output token by token from a ~1,200–1,800-token
     prompt (five full product chunks), and `gpt-4o` answers to complex
     questions are both longer (up to 375 completion tokens) and slower per
@@ -713,6 +710,8 @@ gets a refusal, not wrong information), but each costs a real answer.
 > log); `make cost-report` output with absolute savings, percentage
 > savings, **and a named baseline model**.
 
+**Summary.** The cost log holds 66 real entries from this project's queries. `make cost-report` reports $0.1823 (68.8%) saved against a `gpt-4o` baseline. Excluding the judge calls, which run on `gpt-4o-mini` either way, and adding the unlogged classifier cost, routing itself saved about 48%.
+
 ### Part A — Cost log + dashboard
 
 - Total entries: `wc -l data/cost_log.jsonl` → **66**. These are all real
@@ -730,7 +729,7 @@ gets a refusal, not wrong information), but each costs a real answer.
 {"timestamp": "2026-11-10T23:34:40.627709+00:00", "model": "gpt-4o-mini", "prompt_tokens": 1513, "completion_tokens": 23, "cost_usd": 0.00024075, "query_type": "hallucination_check"}
 ```
 
-- Screenshot (or paste) of `GET /cost-dashboard`:
+- `GET /cost-dashboard`:
 
 ![Cost dashboard: 66 requests, $0.0828 total; gpt-4o 14 requests $0.0712; gpt-4o-mini 52 requests $0.0116](writeup-assets/cost_dashboard.png)
 
@@ -740,10 +739,9 @@ gets a refusal, not wrong information), but each costs a real answer.
 |------------|------------:|-----------------------:|
 | gpt-4o-mini | 52 | $0.0002 |
 | gpt-4o | 14 | $0.0051 |
-| (judge — if present) | 33 | $0.000211 |
+| judge calls (`gpt-4o-mini`, within the row above) | 33 | $0.000211 |
 
-(Copy directly from `make cost-report` — the "Per-tier summary"
-block prints the table verbatim.)
+The first two rows are the `make cost-report` per-tier summary.
 
 `make cost-report` groups by model, so its `gpt-4o-mini` row (N=52)
 includes the 33 judge calls, which also run on `gpt-4o-mini`. Split by
@@ -777,9 +775,7 @@ Per-tier summary:
 - **Baseline model used:** gpt-4o (`Baseline (gpt-4o): $0.2651`)
 - **Absolute savings:** $0.1823
 - **Percentage savings:** 68.8 %
-- One sentence interpreting the savings (e.g., "the 70/20/10 mix
-  favors gpt-4o-mini heavily, so most of the savings comes from
-  the simple-question class"): routing 19 of the 33 answered questions
+- **Interpretation:** routing 19 of the 33 answered questions
   (58%) to `gpt-4o-mini` saves money, but the 14 complex questions still
   account for 94% of answer spend, so savings come almost entirely from
   the simple class and grow with its share of traffic.
@@ -812,64 +808,61 @@ savings would be higher too.
 > deliverable in numeric order; `make test` ≥195 passing; `make verify`
 > 0 failed; no `.env` or API keys committed.
 
+**Summary.** The full suite passes (248 tests), `make verify` reports 0 failed checks, `.env` is not tracked, and the real API key appears nowhere in the repository's history.
+
 - Tail of `make test`:
 
 ```
-// paste — should end with "N passed" where N ≥ 195
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+248 passed, 26 warnings in 1.30s
 ```
 
 - Tail of `make verify`:
 
 ```
-// paste — should end with "Automated: X passed, 0 failed"
+======================================================================
+Capstone verification — automated checks
+======================================================================
+[+] unit-tests-pass
+    Unit tests: 248 passed, 26 warnings in 1.11s
+[+] dependency-graph-forward-only
+    Forward-dependency graph: 4 passed in 0.03s
+[+] query-response-schema-complete
+    QueryResponse schema: 5 passed in 0.28s
+[+] end-to-end-wiring
+    Cross-package end-to-end: 6 passed in 0.29s
+
+======================================================================
+Manual verification (requires running services + credentials)
+======================================================================
+[ ] make load-data — data/chroma/ is populated; PersistentClient.get_or_create_collection('products').count() returns >0
+[ ] POST /query (simple) — returns response via gpt-4o-mini (check `model` field)
+[ ] POST /query (complex) — returns response via gpt-4o (check `model` field)
+[ ] data/cost_log.jsonl — appended after each query
+[ ] Phoenix tracing dashboard at http://localhost:6006 — trace appears for the request (check trace_id in response). If port 6006 isn't reachable, run `make show-traces` for a markdown export of the same trace data.
+[ ] make eval — RAGAS prints faithfulness/answer_relevancy/context_recall/context_precision
+[ ] Drop a malformed JSON in data/inbox/ — quarantined to data/inbox/failed/ with .error.txt
+[ ] Drop a valid product JSON in data/inbox/ — appears in Chroma within seconds
+[ ] POST /query/stream — receives SSE token events then a 'done' event
+[ ] make install-guardrails-models — DeBERTa + Presidio + zero-shot + NLI models cached
+[ ] guarded_route_query (or _llmguard) — injection input returns blocked_by; clean input passes
+[ ] cached_route_query — repeat query within TTL returns cached=true (verify entries via `chromadb.PersistentClient(path='data/chroma').get_or_create_collection('cache').count()`)
+
+======================================================================
+Automated: 4 passed, 0 failed
+Manual: 12 items to verify in a real environment
+======================================================================
 ```
 
 - `.env` is gitignored (paste output of `git ls-files | grep -E '(^|/)\.env$'`,
-  which should be empty): ___
+  which should be empty): the output is empty. `git check-ignore -v .env`
+  reports `.gitignore:31:.env`.
 - No API keys appear in committed files (a quick `git grep -E 'voc-[A-Za-z0-9]|sk-[A-Za-z0-9]'`
-  returns nothing): ___
-
----
-
-## Appendix — Stand-out Work (optional)
-
-The rubric grades nine required rows; the work below is not
-separately graded but distinguishes a stand-out submission. Fill in
-only what you tackled; remove the rest.
-
-### Stand-out: Semantic Cache
-
-> Six paraphrased queries showing ≥3 cache hits, plus the cache
-> contents.
-
-- Six paraphrased queries with their `cached` field per response:
-- `chromadb.PersistentClient(path='data/chroma').get_or_create_collection('cache').count()`:
-- `.get(limit=10)['metadatas']` excerpt:
-
-### Stand-out: Streaming / TTFT
-
-> `compare_ttft` output for at least 3 queries with TTFT improvement
-> percentage.
-
-```
-// paste compare_ttft output
-```
-
-### Stand-out: Third Routing Tier
-
-> Show one query landing on each of the three tiers after extending
-> `MODEL_PRICING` and `prompts/classifier.j2`.
-
-### Stand-out: Cost Projection at Scale
-
-> Model a higher-volume scenario (e.g., 10,000 queries/day at the
-> observed tier mix) and discuss what would change at scale (rate
-> limits, cache pressure, eval cadence, on-call cost ceilings).
-
----
-
-## Lessons learned (optional)
-
-> Reflect on which layer was the hardest to extend and what you
-> would do differently in a real production system (cost ceilings,
-> auth, multi-tenancy, etc.). One or two paragraphs.
+  returns nothing): no real key is committed. That grep does print matches,
+  but all are false positives: the placeholder
+  `OPENAI_API_KEY=sk-your-openai-api-key` in `.env.example`, and anchor
+  links in `INSTRUCTIONS.md` such as `#task-1--populate…`, where `task-`
+  contains `sk-`. As a stronger check, I searched every diff in the full
+  history (`git log --all -p`) and every commit's tree for the actual key
+  value from my local `.env`: 0 occurrences.
