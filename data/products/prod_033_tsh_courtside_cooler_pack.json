@@ -1,0 +1,22 @@
+{
+  "product_id": "prod_033",
+  "name": "ThirdShotHub Courtside Cooler Backpack",
+  "category": "bags",
+  "brand": "ThirdShotHub",
+  "price": 74.99,
+  "description": "The ThirdShotHub Courtside Cooler Backpack is made for long tournament days. Alongside a padded sleeve for two paddles and a ventilated shoe tunnel, it has a leak-proof insulated cooler compartment that holds four 16 oz drinks and keeps them cold for up to 6 hours. A fence hook lets you hang it on the court fence so your gear stays off the ground.",
+  "specifications": {
+    "type": "backpack",
+    "paddle_capacity": 2,
+    "compartments": 5,
+    "material": "Water-resistant 600D recycled polyester",
+    "dimensions": "19 x 12 x 7 in",
+    "cooler": "Insulated, leak-proof; fits four 16 oz drinks; keeps cold up to 6 hours",
+    "extras": [
+      "Fence hook",
+      "Ventilated shoe tunnel",
+      "Fleece-lined valuables pocket"
+    ]
+  },
+  "care_instructions": "Empty and wipe out the cooler compartment after each use and leave it unzipped to air-dry. Spot clean the exterior with mild soap and water; do not machine wash."
+}

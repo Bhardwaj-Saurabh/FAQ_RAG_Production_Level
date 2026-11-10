@@ -1,0 +1,22 @@
+{
+  "product_id": "prod_035",
+  "name": "ThirdShotHub SunGuard Hooded Long Sleeve",
+  "category": "apparel",
+  "brand": "ThirdShotHub",
+  "price": 49.99,
+  "description": "The ThirdShotHub SunGuard Hooded Long Sleeve protects you during long outdoor sessions. The fabric is rated UPF 50+, blocking over 98% of UV rays, and a lightweight hood covers your neck and ears without blocking peripheral vision. Thumbholes keep the sleeves in place over the backs of your hands, and the recycled polyester knit wicks sweat and dries fast.",
+  "specifications": {
+    "garment_type": "hooded long-sleeve tee",
+    "material": "88% recycled polyester, 12% spandex",
+    "fit": "athletic",
+    "size_range": "XS–XXL",
+    "color_options": [
+      "Glacier White",
+      "Court Blue",
+      "Heather Gray"
+    ],
+    "moisture_wicking": true,
+    "sun_protection": "UPF 50+"
+  },
+  "care_instructions": "Machine wash cold with like colors and tumble dry low. Skip fabric softener, which reduces wicking."
+}
