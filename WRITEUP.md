@@ -715,40 +715,96 @@ gets a refusal, not wrong information), but each costs a real answer.
 
 ### Part A — Cost log + dashboard
 
-- Total entries: `wc -l data/cost_log.jsonl` → ___
-- 5-line excerpt:
+- Total entries: `wc -l data/cost_log.jsonl` → **66**. These are all real
+  entries from the queries run for Deliverables 1–7 (5–10 Nov), so I did
+  not need `make seed-cost-log`. The log records answer generations
+  (`simple`/`complex`) and hallucination-judge calls; cache hits and
+  requests blocked by an input guard add no entry.
+- 5-line excerpt (lines 50–54; all three `query_type` values appear):
 
 ```
-// paste 5 lines from data/cost_log.jsonl
+{"timestamp": "2026-11-10T23:34:22.114390+00:00", "model": "gpt-4o-mini", "prompt_tokens": 1183, "completion_tokens": 27, "cost_usd": 0.00019365, "query_type": "hallucination_check"}
+{"timestamp": "2026-11-10T23:34:28.323280+00:00", "model": "gpt-4o-mini", "prompt_tokens": 1216, "completion_tokens": 23, "cost_usd": 0.00019620000000000003, "query_type": "simple"}
+{"timestamp": "2026-11-10T23:34:30.399339+00:00", "model": "gpt-4o-mini", "prompt_tokens": 1023, "completion_tokens": 32, "cost_usd": 0.00017264999999999997, "query_type": "hallucination_check"}
+{"timestamp": "2026-11-10T23:34:38.604327+00:00", "model": "gpt-4o", "prompt_tokens": 1359, "completion_tokens": 375, "cost_usd": 0.0071475, "query_type": "complex"}
+{"timestamp": "2026-11-10T23:34:40.627709+00:00", "model": "gpt-4o-mini", "prompt_tokens": 1513, "completion_tokens": 23, "cost_usd": 0.00024075, "query_type": "hallucination_check"}
 ```
 
 - Screenshot (or paste) of `GET /cost-dashboard`:
+
+![Cost dashboard: 66 requests, $0.0828 total; gpt-4o 14 requests $0.0712; gpt-4o-mini 52 requests $0.0116](writeup-assets/cost_dashboard.png)
 
 ### Part B — Per-tier summary
 
 | Model tier | Query count | Avg cost / query (USD) |
 |------------|------------:|-----------------------:|
-| gpt-4o-mini | __ | $__ |
-| gpt-4o | __ | $__ |
-| (judge — if present) | __ | $__ |
+| gpt-4o-mini | 52 | $0.0002 |
+| gpt-4o | 14 | $0.0051 |
+| (judge — if present) | 33 | $0.000211 |
 
 (Copy directly from `make cost-report` — the "Per-tier summary"
 block prints the table verbatim.)
+
+`make cost-report` groups by model, so its `gpt-4o-mini` row (N=52)
+includes the 33 judge calls, which also run on `gpt-4o-mini`. Split by
+`query_type` from the same log:
+
+| Model | `query_type` | Count | Avg cost / query (USD) | Total (USD) |
+|---|---|---:|---:|---:|
+| gpt-4o | complex | 14 | $0.005085 | $0.0712 |
+| gpt-4o-mini | simple | 19 | $0.000246 | $0.0047 |
+| gpt-4o-mini | hallucination_check | 33 | $0.000211 | $0.0070 |
+
+A `gpt-4o` answer costs about 21 times a `gpt-4o-mini` answer, mostly
+because of price (16.7× per token) and partly because complex answers
+are longer.
 
 ### Part C — Savings vs. baseline
 
 `scripts/cost_report.py` output:
 
 ```
-// paste — must include the "Baseline (<model>): ..." line
+Records:           66
+Actual cost:       $0.0828
+Baseline (gpt-4o): $0.2651
+Savings:           $0.1823 (68.8%)
+
+Per-tier summary:
+  gpt-4o       N=  14  avg=$0.0051/query  total=$0.0712
+  gpt-4o-mini  N=  52  avg=$0.0002/query  total=$0.0116
 ```
 
-- **Baseline model used:** ___ (copy the name from the cost-report output)
-- **Absolute savings:** $___
-- **Percentage savings:** ___ %
+- **Baseline model used:** gpt-4o (`Baseline (gpt-4o): $0.2651`)
+- **Absolute savings:** $0.1823
+- **Percentage savings:** 68.8 %
 - One sentence interpreting the savings (e.g., "the 70/20/10 mix
   favors gpt-4o-mini heavily, so most of the savings comes from
-  the simple-question class"): ___
+  the simple-question class"): routing 19 of the 33 answered questions
+  (58%) to `gpt-4o-mini` saves money, but the 14 complex questions still
+  account for 94% of answer spend, so savings come almost entirely from
+  the simple class and grow with its share of traffic.
+
+**How much of the 68.8% is routing.** The cost report re-prices every
+log entry at `gpt-4o` rates, including the 33 judge calls. Those run on
+`gpt-4o-mini` whether or not routing is used, so about $0.11 of the
+headline savings comes from the judge, not from routing. The report
+also misses one routing cost: the classifier's `gpt-4o-mini` call is not
+written to the cost log. Phoenix recorded 16 classifier calls averaging
+151 prompt and 32 completion tokens, about $0.000042 each.
+
+| Comparison | Baseline (gpt-4o) | Actual | Savings |
+|---|---:|---:|---:|
+| `make cost-report` (all 66 entries) | $0.2651 | $0.0828 | $0.1823 (68.8%) |
+| Answer generation only (33 routed requests) | $0.1492 | $0.0759 | $0.0733 (49.1%) |
+| Answer generation + classifier overhead (~$0.0014) | $0.1492 | $0.0773 | **$0.0720 (48.2%)** |
+
+So tiered routing itself saved about 48% on this traffic, and the
+classifier pays for itself many times over: it costs about $0.00004
+and saves about $0.0045 each time it sends a question to `gpt-4o-mini`
+instead of `gpt-4o`. This traffic was deliberately mixed for testing
+(42% complex). With the 70/20 simple/complex mix that
+`make seed-cost-log` assumes, the share of cheap answers is higher, so
+savings would be higher too.
 
 ## Deliverable 9 — Submission Quality
 
