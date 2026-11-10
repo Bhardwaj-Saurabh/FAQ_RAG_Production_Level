@@ -591,6 +591,26 @@ curl -X POST http://localhost:8080/query \
 # Actual: null
 ```
 
+**Output guard (hallucination judge) observed on the live route.** Two of
+the twelve Deliverable 7 requests were blocked by the LLM judge:
+
+- "How many balls are in a pack of Onix Pure 2 Indoor Pickleballs?" →
+  `blocked_by: "hallucination: The source states the Onix Pure 2 Indoor
+  Pickleballs have no specified pack size."` **Correct block:** the
+  product data has no pack size, so any count in the answer was invented.
+- "What colors does the Lija Rally Skort come in?" →
+  `blocked_by: "hallucination: The answer includes 'Ocean Blue', which is
+  not mentioned in the source's color options."` **False positive:**
+  `prod_016` lists `color_options: ["Black", "White", "Ocean Blue",
+  "Sunset Pink"]`, and that chunk was in the text sent to the judge. The
+  `gpt-4o-mini` judge misread it.
+
+So the judge is not perfect on live traffic, despite FPR = 0.00 on the
+golden cohort. Together with the BanTopics false positive in
+Deliverable 4, that is two legitimate answers blocked by output guards
+across roughly 30 live queries. Both failures are fail-safe (the customer
+gets a refusal, not wrong information), but each costs a real answer.
+
 ## Deliverable 7 — Distributed Tracing
 
 > **Rubric:** ≥10 `POST /query` requests; one Phoenix screenshot
@@ -601,13 +621,89 @@ curl -X POST http://localhost:8080/query \
 
 - Either a Phoenix screenshot (with one trace expanded) **or** the
   `make show-traces` markdown output for ≥10 queries.
+
+  I sent 12 new questions (none asked earlier the same day, so none
+  could hit the semantic cache) to `POST /query` with `make serve`
+  running: 7 routed to `gpt-4o-mini` and 5 to `gpt-4o`. This is the
+  `make show-traces` table for those 12 requests. A plain
+  `make show-traces` also lists the classifier, judge and embedding
+  calls, because Phoenix records each OpenAI call made outside
+  `rag_query` as its own trace; I kept only the traces with a
+  `rag_query` root, the same filter `make seed-traces` applies.
+
+12 trace(s) captured. Showing the most recent 12.
+
+| # | Trace ID | Question | Model | Latency (ms) | Prompt tok | Compl. tok | Slowest child | Slowest (ms) |
+|---|---|---|---|---|---|---|---|---|
+| 1 | `7fe3cf01` | What colors does the Lija Rally Skort come in? | gpt-4o-mini | 2935.4 | 1246 | 27 | ChatCompletion | 2312.8 |
+| 2 | `3a4a868b` | I play in hot weather and sweat a lot. What grip and apparel would you recommend | gpt-4o | 3167.0 | 1237 | 239 | ChatCompletion | 2593.9 |
+| 3 | `2fe2c5ca` | What size is the Tourna Lead Tape Roll? | gpt-4o-mini | 2565.3 | 1618 | 44 | ChatCompletion | 1925.5 |
+| 4 | `86d6e235` | Which paddle in your catalog is best for a player who wants more spin and contro | gpt-4o | 3515.8 | 1518 | 216 | ChatCompletion | 2766.7 |
+| 5 | `a7a35c27` | How should I store the Selkirk Team Backpack? | gpt-4o-mini | 3103.1 | 1230 | 95 | ChatCompletion | 2513.9 |
+| 6 | `df7f9771` | What is the Diadem Warrior Performance Tee made of? | gpt-4o-mini | 2393.0 | 1356 | 29 | ChatCompletion | 1775.0 |
+| 7 | `09d0d939` | Compare the Gamma Hi-Rise Ball Hopper and the PBPro Portable Net System for some | gpt-4o | 4483.9 | 1359 | 375 | ChatCompletion | 3871.5 |
+| 8 | `592fd695` | How many balls are in a pack of Onix Pure 2 Indoor Pickleballs? | gpt-4o-mini | 2105.0 | 1216 | 23 | ChatCompletion | 1485.2 |
+| 9 | `dd5ea416` | Which court shoes would suit a player who needs extra cushioning for long sessio | gpt-4o | 2641.5 | 1289 | 107 | ChatCompletion | 2079.4 |
+| 10 | `e0edd94c` | What face material does the Chorus Shapeshifter SX use? | gpt-4o-mini | 2722.0 | 1792 | 48 | ChatCompletion | 2074.2 |
+| 11 | `12820c18` | How long is the handle on the JOOLA Ben Johns Perseus 3S 16mm? | gpt-4o-mini | 2320.9 | 1624 | 25 | ChatCompletion | 1619.7 |
+| 12 | `bfc10210` | What is the price of the HEAD Radical Tour paddle? | gpt-4o-mini | 2347.2 | 1548 | 15 | ChatCompletion | 1601.5 |
+
+  One trace expanded, `09d0d939…` (the hopper-versus-net comparison,
+  routed to `gpt-4o`):
+
+  | Span | Parent | Duration (ms) |
+  |---|---|---:|
+  | `rag_query` | root | 4,488.4 |
+  | `CreateEmbeddings` (query embedding for retrieval) | `rag_query` | 595.2 |
+  | `ChatCompletion` (answer generation) | `rag_query` | 3,871.5 |
+  | `rag_generation` (attribute marker) | `rag_query` | 0.1 |
+
+  The Chroma search isn't instrumented; it is the remaining ~22 ms of
+  `rag_query`. `rag_generation` is created after the answer returns, to
+  record model, tokens and cost, so its duration is ~0. The real
+  generation time is the `ChatCompletion` span.
+
+  **What the trace does not cover.** `rag_query` wraps only retrieval
+  and generation. The input guards, the cache lookup, the classifier and
+  the hallucination judge run outside it, so I matched every span to its
+  request by time window and compared against the measured HTTP latency.
+  Means over all 12 requests:
+
+  | Step | Mean (ms) | Share of HTTP request |
+  |---|---:|---:|
+  | **Generation (`ChatCompletion` in `rag_query`)** | **2,218** | **27%** |
+  | Classifier call (`gpt-4o-mini`) | 1,743 | 21% |
+  | Hallucination-judge call (`gpt-4o-mini`) | 1,729 | 21% |
+  | Cache lookup + store embeddings | 1,274 | 15% |
+  | Retrieval query embedding | 621 | 7% |
+  | Chroma search | ~24 | <1% |
+  | ML input guards, framework, other | 728 | 9% |
+  | **Total HTTP request** | **8,336** | 100% |
+
 - Slowest step in your traces:
-  - Step name: ___
-  - Latency: ___ ms
-  - Fraction of total request latency: ___ % (computed from the span
-    durations)
-  - One sentence on why it's the slowest (cache effect, model size,
-    prompt length, etc.): ___
+  - Step name: answer generation, the `ChatCompletion` span inside
+    `rag_query`. It is the slowest child span in all 12 traces.
+  - Latency: 2,218 ms on average (1,485–3,872 ms). 1,918 ms on
+    `gpt-4o-mini` requests and 2,828 ms on `gpt-4o` requests.
+  - Fraction of total request latency: **77% of the traced pipeline**
+    (2,218 of 2,863 ms in `rag_query`) and **27% of the end-to-end HTTP
+    request** (2,218 of 8,336 ms). In the expanded trace it is 86% of
+    `rag_query` and 33% of that 11.8 s request.
+  - One sentence on why it's the slowest: generation is the only step
+    that produces a long output token by token from a ~1,200–1,800-token
+    prompt (five full product chunks), and `gpt-4o` answers to complex
+    questions are both longer (up to 375 completion tokens) and slower per
+    token, so this one call outweighs any other single step.
+
+  **Bottleneck beyond the single slowest span.** The three LLM calls
+  together (classifier, generation, judge) take 5.7 s, or 68% of each
+  request, and all OpenAI calls including embeddings take 91%. Retrieval
+  itself (Chroma) is negligible. The best latency gains would therefore
+  come from cutting calls rather than speeding up retrieval: run the
+  classifier and the cache-lookup embedding in parallel, reuse the
+  query embedding for both cache and retrieval (it is computed twice per
+  request), or skip the judge on cache hits and very short factual
+  answers.
 
 ## Deliverable 8 — Cost Monitoring, Per-Tier Summary, and Savings
 
