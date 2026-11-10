@@ -1080,6 +1080,62 @@ Safer options would be to cache per product and attribute, or to
 re-check a hit with a cheap judge before serving it. Each hit saved one
 classifier, generation and judge call: about $0.0005 and 8 s here.
 
+#### Threshold sweep and a live false positive
+
+To see how the threshold trades hit rate against wrong answers, I scored
+the four rewordings above and five *different* questions about the same
+bag against the cache. Each one's nearest cached entry is shown with its
+similarity, then hit or miss at each threshold (the same rule
+`lookup()` applies). Every nearest entry was question #1, except the
+shoe-compartment question, whose nearest was #6.
+
+| Kind | Question | Similarity | 0.80 | 0.85 | 0.90 | 0.95 |
+|---|---|---:|---|---|---|---|
+| Rewording | How many paddles fit in the JOOLA Tour Elite Pro Duffel? | 0.956 | **hit** | **hit** | **hit** | **hit** |
+| Rewording | JOOLA Tour Elite Pro Duffel paddle capacity? | 0.887 | **hit** | **hit** | miss | miss |
+| Rewording | What is the paddle capacity of the JOOLA Tour Elite Pro Duffel bag? | 0.921 | **hit** | **hit** | **hit** | miss |
+| Rewording | How many paddles does the JOOLA Tour Elite Pro Duffel carry? | 0.967 | **hit** | **hit** | **hit** | **hit** |
+| Different question | How many compartments does the JOOLA Tour Elite Pro Duffel have? | 0.823 | **hit** | miss | miss | miss |
+| Different question | How much does the JOOLA Tour Elite Pro Duffel cost? | 0.767 | miss | miss | miss | miss |
+| Different question | What is the JOOLA Tour Elite Pro Duffel made of? | 0.767 | miss | miss | miss | miss |
+| Different question | Does the JOOLA Tour Elite Pro Duffel have a separate shoe compartment? | 0.726 | miss | miss | miss | miss |
+| Different question | How many balls fit in the JOOLA Tour Elite Pro Duffel? | 0.872 | **hit** | **hit** | miss | miss |
+
+| Threshold | Rewordings served from cache | Different questions wrongly served |
+|---|---:|---:|
+| 0.80 | 4/4 | 2/5 |
+| 0.85 (default) | 4/4 | 1/5 |
+| 0.90 | 3/4 | 0/5 |
+| 0.95 | 2/4 | 0/5 |
+
+**False positive at the default threshold.** "How many balls fit in the
+JOOLA Tour Elite Pro Duffel?" scores 0.872 against the cached *paddles*
+question, above 0.85. Sent to the live route:
+
+```bash
+curl -X POST http://localhost:8080/query \
+  -H 'Content-Type: application/json' \
+  -d '{"question": "How many balls fit in the JOOLA Tour Elite Pro Duffel?"}' | jq '{cached, answer}'
+# → cached: true, answer: "The JOOLA Tour Elite Pro Duffel can hold up to 6 paddles, each with individual protective sleeves."
+```
+
+The product data (`prod_014`) gives dimensions, 8 compartments, material
+and a 52 L capacity, but no ball capacity, so the right answer is "not
+specified". The cache answered a different question. Nothing caught it,
+because a cache hit returns before the classifier, generation and the
+hallucination judge.
+
+**Recommendation.** 0.90 is the better setting for this catalog: it kept
+3 of 4 rewordings (losing only the terse "…paddle capacity?") and served
+none of the five different questions, while 0.85 kept all four
+rewordings but answered the balls question wrongly. Questions about one
+product share most of their words (the product name), so similarity
+alone separates "same question" from "same product, different
+attribute" poorly. A small loss in hit rate is worth it for a store
+where a wrong spec is worse than a slower answer. I have not changed
+the default in `src/cache/semantic.py`; this is a recommendation from a
+small sample (9 questions about one product).
+
 ### Stand-out: Streaming / TTFT
 
 **Summary.** `compare_ttft` reports a 72.5% average improvement in time
@@ -1118,6 +1174,13 @@ questions, with retrieval inside both timers and streaming run first:
   The gain grows with answer length: 18% for a short care-instructions
   answer, 64% for a multi-product comparison. For one-line lookups it
   hardly matters.
+- **When streaming isn't worth the plumbing.** For one-line factual
+  answers, which are most of this catalog's simple questions, the first
+  token and the last arrive almost together, so streaming adds SSE
+  handling, partial-render UI and a second code path for little gain. It
+  also can't stream through the output guard: the hallucination judge
+  needs the whole answer, so a streamed answer is either unchecked or
+  checked after the customer has read it.
 - Total time is unchanged (3.0 s streamed against 2.8 s blocking), so
   streaming improves perceived latency, not throughput or cost.
 - On the HTTP routes the picture differs again. `/query/stream` still
