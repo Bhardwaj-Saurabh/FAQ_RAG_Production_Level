@@ -276,11 +276,127 @@ recommendation in Deliverable 2.
 > visible in `POST /query` `sources`) and a quarantined failure with
 > `<name>.error.txt`.
 
+With `make serve` running, I copied six files into `data/inbox/`: three
+valid products and three malformed ones, one for each kind of quarantine.
+No restart was needed. The valid products were searchable straight away
+because the watcher runs inside the server process.
+
 - Successful ingestion: drop a valid JSON in `data/inbox/`, then run a
   `POST /query` whose `sources` cites the new product. Paste both
   files / responses.
+
+  | File | `doc_id` | Query | Rank in `sources` |
+  |---|---|---|---|
+  | `tsh_quiet_court_paddle.json` | `prod_037` | "My HOA has pickleball noise restrictions. Do you sell a quiet paddle?" | 1 |
+  | `tsh_cooling_towel.json` | `prod_038` | "What can I use to stay cool between games on a hot day?" | 1 |
+  | `tsh_dink_rebounder.json` | `prod_036` | "Do you sell a rebounder net for solo dink practice? What does it cost?" | 1 |
+
+  The products collection grew from 35 to 38 chunks, and none of the
+  malformed files reached it.
+
+  `data/inbox/tsh_quiet_court_paddle.json`:
+
+```json
+{
+  "product_id": "prod_037",
+  "name": "ThirdShotHub Quiet Court Paddle",
+  "category": "paddles",
+  "brand": "ThirdShotHub",
+  "price": 109.99,
+  "description": "The ThirdShotHub Quiet Court Paddle is built for communities and HOAs with pickleball noise restrictions. A foam-filled core and a damping face layer cut the sharp pop of each hit to a softer thud, so you can keep playing near homes. It meets the green-zone noise rating used by many quiet-paddle programmes while staying light and easy to control.",
+  "specifications": {
+    "weight": "7.9 oz",
+    "grip_size": "4.25 in",
+    "face_material": "Fiberglass with acoustic damping layer",
+    "core": "Foam-filled polymer honeycomb",
+    "shape": "widebody",
+    "length": "15.75 in",
+    "width": "8.0 in",
+    "noise_rating": "Quiet / green-zone"
+  },
+  "care_instructions": "Wipe the face with a damp cloth after play. Avoid heat and direct sun, which can soften the foam core."
+}
+```
+
+  Query and response:
+
+```bash
+curl -X POST http://localhost:8080/query \
+  -H 'Content-Type: application/json' \
+  -d '{"question": "My HOA has pickleball noise restrictions. Do you sell a quiet paddle?"}'
+```
+
+```json
+{
+  "answer": "Yes, we do sell a paddle suitable for communities with pickleball noise restrictions. The **ThirdShotHub Quiet Court Paddle** is designed specifically for this purpose. It features a foam-filled core and an acoustic damping face layer that minimizes the noise to a softer thud, making it ideal for use in areas with noise constraints. It meets the green-zone noise rating, which is recognized by many quiet-paddle programs. \n\n- **Price:** $109.99 USD\n- **Weight:** 7.9 oz\n- **Grip size:** 4.25 in\n- **Face material:** Fiberglass with acoustic damping layer\n- **Core:** Foam-filled polymer honeycomb\n\nThis paddle helps ensure you can keep playing near residential areas without causing disturbances.",
+  "sources": [
+    {
+      "doc_id": "prod_037",
+      "chunk_text": "ThirdShotHub Quiet Court Paddle\n\nThe ThirdShotHub Quiet Court Paddle is built for communities and HOAs with pickleball noise restrictions. A foam-filled core and a damping face layer cut the sharp pop of each hit to a softer thud, so you can keep playing near homes. It meets the green-zone noise rating used by many quiet-paddle programmes while staying light and easy to control.\n\nPrice: $109.99 USD\n\nSpecifications:\n  weight: 7.9 oz\n  grip_size: 4.25 in\n  face_material: Fiberglass with acoustic damping layer\n  core: Foam-filled polymer honeycomb\n  shape: widebody\n  length: 15.75 in\n  width: 8.0 in\n  noise_rating: Quiet / green-zone\n\nCare instructions: Wipe the face with a damp cloth after play. Avoid heat and direct sun, which can soften the foam core.",
+      "similarity_score": 0.7160032138295443
+    },
+    {
+      "doc_id": "prod_002",
+      "chunk_text": "JOOLA Hyperion CFS 16\n\nThe JOOLA Hyperion CFS 16 is a premium carbon fiber paddle designed for competitive players who demand maximum spin and power. Its Carbon Friction Surface technology creates exceptional ball grip for aggressive topspin shots, while the reactive honeycomb polymer core ensures a solid, responsive feel at the net.\n\nPrice: $199.99 USD\n\nSpecifications:\n  weight: 8.2 oz\n  grip_size: 4.0 in\n  face_material: Carbon Friction Surface (CFS)\n  core: Reactive honeycomb polymer\n  shape: elongated\n  length: 16.5 in\n  width: 7.5 in\n\nCare instructions: Clean the carbon fiber face with a microfiber cloth and mild soap solution. Do not use abrasive cleaners. Store in the included neoprene cover to protect the face texture.",
+      "similarity_score": 0.4304711182371236
+    },
+    {
+      "doc_id": "prod_008",
+      "chunk_text": "Franklin X-40 Outdoor Pickleballs\n\nThe Franklin X-40 is the official ball of USA Pickleball and the most widely used outdoor tournament ball. Precision-drilled 40-hole design ensures consistent flight and bounce in wind. Made from durable seamless construction that resists cracking in temperature extremes.\n\nPrice: $12.99 USD\n\nSpecifications:\n  diameter: 2.87 in\n  weight: 0.92 oz\n  hole_count: 40\n  material: Seamless high-density polyethylene\n  indoor_outdoor: outdoor\n\nCare instructions: Store in a cool, dry place. Outdoor balls will eventually crack with heavy use — this is normal wear. Rotate balls during play to extend their life. Discard balls that show visible cracks or have lost their round shape.",
+      "similarity_score": 0.4282775289681373
+    },
+    {
+      "doc_id": "prod_009",
+      "chunk_text": "Onix Pure 2 Indoor Pickleballs\n\nThe Onix Pure 2 is engineered specifically for indoor play, featuring 26 precisely spaced holes for a softer, more controlled flight on gym and rec center surfaces. The true-flight design minimizes wobble and provides consistent bounce on smooth indoor courts.\n\nPrice: $9.99 USD\n\nSpecifications:\n  diameter: 2.87 in\n  weight: 0.86 oz\n  hole_count: 26\n  material: Durable TPU blend\n  indoor_outdoor: indoor\n\nCare instructions: Indoor balls last longer than outdoor balls. Store at room temperature. Clean with a damp cloth if they pick up dust or gym floor residue.",
+      "similarity_score": 0.4243733741437159
+    },
+    {
+      "doc_id": "prod_005",
+      "chunk_text": "HEAD Radical Tour\n\nThe HEAD Radical Tour brings tennis engineering expertise to the court. Featuring an Extreme Spin Texture (EST) face and an Optimized Tubular Construction (OTC) frame, this paddle delivers consistent power from edge to edge with a generous sweet spot suited to all-court players.\n\nPrice: $149.99 USD\n\nSpecifications:\n  weight: 8.1 oz\n  grip_size: 4.25 in\n  face_material: Extreme Spin Texture (EST) composite\n  core: Polypropylene honeycomb\n  shape: standard\n  length: 15.875 in\n  width: 7.875 in\n\nCare instructions: Wipe with a clean damp cloth. Inspect the edge guard periodically for cracks and replace if damaged to protect the core. Store away from moisture.",
+      "similarity_score": 0.4083954284138611
+    }
+  ],
+  "confidence": 0.4815041327184765,
+  "model": "gpt-4o",
+  "tokens": {
+    "prompt_tokens": 1250,
+    "completion_tokens": 152
+  },
+  "cost_usd": 0.004645,
+  "cached": false,
+  "trace_id": "bb971f38dc691378c0787c56d219f9d3",
+  "blocked_by": null
+}
+```
+
 - Quarantined failure: drop a malformed JSON, then paste the
   `data/inbox/failed/<name>.error.txt` content.
+
+  Each bad file moved to `data/inbox/failed/` with a sibling `.error.txt`:
+
+  | File | What's wrong | `.error.txt` |
+  |---|---|---|
+  | `bad_missing_price.json` | Valid JSON with no `price` field | `missing required fields: ['price']` |
+  | `bad_invalid_json.json` | Copy of `inbox-templates/bad.json`: trailing comma (and no `price`) | `invalid JSON: Expecting property name enclosed in double quotes: line 15 column 3 (char 619)` |
+  | `bad_oversized.json` | Valid product padded to 308,066 bytes | `file exceeds 262144-byte limit (308066 bytes)` |
+
+  ```text
+  $ cat data/inbox/failed/bad_missing_price.json.error.txt
+  missing required fields: ['price']
+  ```
+
+  The invalid-JSON file is also missing `price`, but the watcher stops at
+  the first failure, so its reason is the parse error. The checks run in
+  order: size, then JSON parsing, then the schema.
+
+**Note for Deliverable 6.** My first question about the rebounder ("Is there
+something I can use to practise dinks by myself without a partner?") came
+back with the canned refusal and
+`blocked_by: "off_topic: BanTopics flagged answer (risk=0.000)"`. Retrieval
+and generation worked, but the BanTopics output scanner judged the answer
+close enough to one of its banned topics to block it. The 0.000 risk means
+the score only just crossed the threshold. It was a false positive on a
+legitimate product answer; rephrasing the question got a normal answer.
 
 ## Deliverable 5 — Automated Evaluation Suite + Threshold
 
