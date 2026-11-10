@@ -410,25 +410,81 @@ legitimate product answer; rephrasing the question got a normal answer.
 ### Aggregate metrics
 
 ```
-faithfulness:      ?.???
-answer_relevancy:  ?.???
-context_recall:    ?.???
-context_precision: ?.???
+faithfulness:      0.859
+answer_relevancy:  0.842
+context_recall:    0.844
+context_precision: 0.748
 ```
+
+Run: `scripts/run_eval.py --max-workers=1` (what `make eval` runs, at
+`top_k=5`) with `--output` added to keep per-question scores. 30 golden
+questions, no `nan` cells. The catalog had 38 products at the time.
+
+Per-question distribution from the same run:
+
+| Metric | Mean | Median | 25th pct | 10th pct | Min | Questions < 0.5 |
+|---|---:|---:|---:|---:|---:|---:|
+| faithfulness | 0.859 | 1.000 | 0.805 | 0.590 | 0.000 | 2 |
+| answer_relevancy | 0.842 | 0.876 | 0.800 | 0.690 | 0.000 | 1 |
+| context_recall | 0.844 | 1.000 | 1.000 | 0.000 | 0.000 | 4 |
+| context_precision | 0.748 | 1.000 | 0.550 | 0.000 | 0.000 | 8 |
 
 ### Analysis (all four bullets required)
 
-- **Lowest-scoring metric:** ___
-- **Plausible cause** (grounded in the dataset or the pipeline —
-  chunking, retrieval coverage, prompt phrasing, judge model
-  behavior, etc.): ___
-- **Regression threshold for [metric]:** [value], justified by
-  [descriptive stat from this run — e.g., "median was 0.84 across
-  30 questions, 10th percentile was 0.61, so a 0.75 cutoff catches
-  ≥10pp degradations without false alarms on per-query stochasticity"]
-- **Action on violation:** ___ (re-run with same seed / rollback the
-  latest prompt change / bisect the most recent retrieval change /
-  page on-call / etc.)
+- **Lowest-scoring metric:** context_precision, at 0.748. It is the only
+  metric below 0.80, and 8 of the 30 questions scored under 0.5 on it.
+
+- **Plausible cause:** most of the precision loss comes from questions
+  that semantic search can't answer by similarity: superlatives across
+  the catalog and open-ended recommendations. "Which paddle has the
+  widest body?" (Q27), "What is the cheapest product you sell?" (Q29),
+  "Which paddles have a fiberglass face?" (Q7) and "What paddle would you
+  recommend for someone who plays singles?" (Q20) all scored 0 on
+  context precision. Answering "cheapest" or "widest" means comparing a
+  numeric attribute across every product, but retrieval returns the five
+  chunks whose text is closest to the question. For Q29 those were a
+  sling bag, a towel, indoor balls, a paddle and shoes, not the $6.99
+  Tourna Lead Tape. The answer was then wrong ("Franklin X-26 at $7.99"),
+  so this is a real retrieval-coverage gap, not just a scoring artifact.
+  Two pipeline details make it worse: each product is one long chunk,
+  so generic paddle descriptions match many paddle questions; and the
+  catalog grew from 25 to 38 products, so more near-duplicate paddles
+  compete for the five slots, while some ground truths (Q7's list of
+  three fiberglass paddles) predate products added since. Price is
+  already stored as Chroma metadata, so sorting or filtering on it for
+  superlative questions would fix the price cases.
+
+  Judge noise also pulls scores down. Q3 and Q22 retrieved exactly the
+  two products asked about at ranks 1 and 2 and answered correctly, yet
+  scored 0 on context precision. Q15's answer repeats the reference
+  almost word for word and scored 0 on faithfulness. Individual scores
+  are therefore unreliable, which is why the threshold below applies to
+  the aggregate.
+
+- **Regression threshold for faithfulness:** aggregate faithfulness
+  ≥ 0.80. In this run the mean was 0.859, the median 1.000, the 25th
+  percentile 0.805 and the 10th percentile 0.590, across 30 questions.
+  At `top_k=5` the Deliverable 2 sweep measured 0.892, so two runs of
+  the same configuration ranged from 0.859 to 0.892: judge stochasticity
+  alone moves the aggregate by about 0.03. A cutoff at 0.80 sits about
+  6 points below this run's mean and twice the observed run-to-run
+  spread below the sweep's value, so noise shouldn't trip it. Each
+  question is worth 1/30 ≈ 0.033 of the aggregate, so 0.80 is roughly
+  two more questions turning fully unfaithful, a real regression for a
+  service that must not invent product facts.
+
+  A secondary guard on the lowest metric: aggregate context_precision
+  ≥ 0.70. Two runs at `top_k=5` gave 0.746 and 0.748, a range of only
+  0.002, so 0.70 leaves margin while catching a retrieval change that
+  breaks one or two more questions.
+
+- **Action on violation:** first re-run `make eval` once, because
+  single-question judge scores are noisy (Q15 scored 0 on a correct
+  answer). If the re-run is still below the threshold, block the
+  deploy, compare per-question scores against this run's baseline to
+  find the questions that dropped, and bisect the most recent changes to
+  `prompts/rag_system.j2`, the chunker, `top_k`, the embedding model or
+  the product catalog. Roll back the change that caused the drop.
 
 ## Deliverable 6 — Input and Output Guardrails
 
