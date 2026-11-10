@@ -37,6 +37,39 @@ INJECTION_PATTERNS: list[re.Pattern] = [
         r"\b(jailbreak\s+mode|DAN\s+mode|developer\s+mode|do\s+anything\s+now)\b",
         re.IGNORECASE,
     ),
+    # Instruction reset with "forget"/"erase"/"wipe"/"discard", which the
+    # ignore/disregard patterns above don't cover. Up to three words may sit
+    # between the verb and the target ("forget your previous instructions").
+    re.compile(
+        r"\b(forget|erase|wipe|discard)\b(\s+\w+){0,3}?\s+"
+        r"(instructions?|rules|guidelines|directives?|system\s+prompt|programming)\b"
+        r"|\bforget\s+(everything|all)\s+(you\s+(were|have\s+been)\s+told|above|before)\b",
+        re.IGNORECASE,
+    ),
+    # Persistent behaviour override: "From now on you will ...". DeBERTa let
+    # this through in testing. "From now on I will ..." (a customer talking
+    # about themselves) does not match.
+    re.compile(
+        r"\b(from\s+now\s+on|henceforth|for\s+the\s+rest\s+of\s+(this|the)\s+"
+        r"(conversation|chat))\b[\s,]*(you|you'll|your)\b",
+        re.IGNORECASE,
+    ),
+    # Context-delimiter escape: fake copies of the <<<BEGIN/END_CONTEXT>>>
+    # markers in prompts/rag_system.j2, or chat-template tags ([INST],
+    # <<SYS>>, <system>), used to break out of the data block.
+    re.compile(
+        r"<<<\s*/?\s*(BEGIN|END)_?CONTEXT\s*>>>|\b(BEGIN|END)_CONTEXT\b"
+        r"|\[/?\s*(INST|SYS)\s*\]|<<\s*/?\s*SYS\s*>>|<\s*/?\s*(system|instructions?)\s*>",
+        re.IGNORECASE,
+    ),
+    # Prompt leak by echo: "repeat everything above", "print the text before
+    # this". Asking to repeat a product fact ("repeat the weight") doesn't match.
+    re.compile(
+        r"\b(repeat|print|output|copy|echo|recite|reproduce|show\s+me|tell\s+me)\s+(back\s+)?"
+        r"(everything|all|the\s+(text|words|content|messages?)|what\s+(is|was))\s+"
+        r"((written|said|stated)\s+)?(above|before\s+this|prior\s+to\s+this|so\s+far|earlier)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 PII_PATTERNS: dict[str, re.Pattern] = {
