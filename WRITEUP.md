@@ -233,14 +233,42 @@ Run: 30 golden questions per setting, `EVAL_MAX_WORKERS=1`, no `nan` cells.
 > `model` field differs across captured outputs; the writeup names
 > the classification each query received.
 
-| Query | classification | model |
-|-------|---------------|-------|
-| ... (simple)     | simple   | gpt-4o-mini |
-| ... (complex)    | complex  | gpt-4o |
-| ... (borderline) | _your call_ | _captured_ |
+| Query | classification | model | cost_usd |
+|-------|---------------|-------|---------:|
+| (simple) What is the weight of the Selkirk AMPED S2? | simple | gpt-4o-mini | 0.00024 |
+| (complex) Compare the Selkirk Vanguard Power Air and the JOOLA Hyperion CFS 16 for a player with arm fatigue who wants tournament-grade power. | complex | gpt-4o | 0.00768 |
+| (borderline) Is the Engage Pursuit MX a forgiving choice for someone who plays casually on weekends? | complex | gpt-4o | 0.00448 |
+| (simple) How much does a pack of Franklin X-40 Outdoor Pickleballs cost? | simple | gpt-4o-mini | 0.00018 |
+| (simple) How should I clean the HEAD Radical Tour paddle? | simple | gpt-4o-mini | 0.00031 |
+| (complex) I'm a beginner on a budget under $120. Which paddle and balls should I buy for outdoor play? | complex | gpt-4o | 0.00486 |
 
-(Pull these from `data/cost_log.jsonl` or from `POST /query`
-responses.)
+Classifications come from the `query_type` field in `data/cost_log.jsonl`;
+models and costs come from the `POST /query` responses. Every response had
+`cached: false` and `blocked_by: null`, so each one went through the
+classifier and the output guards passed.
+
+**Are the decisions sensible?** Yes. Single-attribute lookups (weight, price,
+care) went to `gpt-4o-mini`, and comparisons and recommendations went to
+`gpt-4o`. A complex query cost $0.0045–$0.0077 against $0.0002–$0.0003 for a
+simple one, about 20–30 times more, so sending only the questions that need
+reasoning to `gpt-4o` matters.
+
+**Borderline query.** The classifier sent the Engage Pursuit MX question to
+`complex`. Running the same classifier prompt five more times gave `complex`
+every time, with reasoning such as "the query requires an evaluation of the
+product's suitability based on the user's casual playing style". That fits
+the prompt: "simple" covers a single attribute, but "forgiving for a casual
+weekend player" asks for a judgement against a use case, which the prompt
+defines as complex. The `gpt-4o` answer also earned the upgrade: it explained
+that the Pursuit MX is built for control and suggested the Paddletek Bantam
+TS-5 as a more forgiving alternative.
+
+**A limit outside routing.** The budget question was routed correctly, but the
+answer recommended a paddle and balls totalling $127.98 (and said so), when the
+11SIX24 Monarch ($99.99) plus Franklin X-40 balls ($12.99) would total $112.98.
+The Monarch was not in the five retrieved sources: four of the five were balls.
+This is a retrieval limit at `top_k=5`, and it supports the `top_k=10`
+recommendation in Deliverable 2.
 
 ## Deliverable 4 — Automated Data Ingestion + Quarantine
 
