@@ -10,6 +10,7 @@ Usage:
     uv run python scripts/show_traces.py --last 20             # last 20
     uv run python scripts/show_traces.py --json                # JSON
     uv run python scripts/show_traces.py --output traces.md    # write file
+    uv run python scripts/show_traces.py --trace bd891ac2      # one trace as a span tree
 
 Or via the Makefile shortcut:
     make show-traces
@@ -23,6 +24,7 @@ from src.config import settings
 from src.tracing.trace_export import (
     render_json,
     render_markdown,
+    render_trace_tree,
     summarize_traces,
 )
 
@@ -80,6 +82,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Emit JSON instead of markdown.",
     )
     parser.add_argument(
+        "--trace",
+        type=str,
+        default=None,
+        help="Show one trace (full ID or prefix) as a span tree with per-span latency.",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         help="Write the output to a file instead of stdout.",
@@ -96,6 +104,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"Is `make serve` running? Error: {exc}", file=sys.stderr)
         return 1
+
+    if args.trace:
+        output = render_trace_tree(df, args.trace)
+        if args.output:
+            Path(args.output).write_text(output)
+            print(f"Wrote {args.output}", file=sys.stderr)
+        else:
+            print(output)
+        return 0
 
     summaries = summarize_traces(df, last_n=args.last)
     total = 0 if df is None else len(df.groupby("context.trace_id"))

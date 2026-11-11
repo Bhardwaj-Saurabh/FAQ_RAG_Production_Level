@@ -82,8 +82,8 @@ test: ## Run the unit + integration test suite
 verify: ## Run the capstone verification checklist
 	uv run python scripts/verify_capstone.py
 
-show-traces: ## Export recent Phoenix traces as markdown (rubric §7 fallback)
-	uv run python scripts/show_traces.py
+show-traces: ## Export recent Phoenix traces as markdown (rubric §7 fallback); TRACE=<id> shows one trace's span tree
+	uv run python scripts/show_traces.py $(if $(TRACE),--trace $(TRACE),)
 
 tune-factuality: ## Empirically tune the FactualConsistency threshold against the golden + negative cohorts
 	uv run python scripts/tune_factuality_threshold.py

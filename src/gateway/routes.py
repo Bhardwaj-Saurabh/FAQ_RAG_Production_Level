@@ -13,6 +13,7 @@ and for module-by-module exploration in the curriculum.
 """
 
 from fastapi import APIRouter
+from opentelemetry import trace
 from pydantic import BaseModel, Field
 
 from src.cache.semantic import lookup as cache_lookup
@@ -28,6 +29,7 @@ from src.guardrails.wrapper import (
 from src.models import QueryResponse
 
 router = APIRouter()
+_tracer = trace.get_tracer(__name__)
 
 
 class QueryRequest(BaseModel):
@@ -84,23 +86,63 @@ async def query(request: QueryRequest) -> QueryResponse:
     Standalone wrappers (``guarded_route_query`` in ``src.guardrails`` and
     ``cached_route_query`` in ``src.cache``) compose the same pieces in
     isolation; they remain for tests and module-by-module exploration.
+
+    **Tracing.** The whole request runs inside one ``query_request`` root
+    span, with a child span per stage (``input_guards``, ``cache_lookup``,
+    ``classification``, ``rag_query`` → ``retrieval`` + ``generation``,
+    ``output_guards``, ``cache_store``). Every response — including
+    blocked and cached ones — carries that root span's trace ID. Only the
+    redacted question is recorded on the span.
     """
-    if reason := detect_prompt_injection(request.question):
-        return _safe_response(SAFE_BLOCKED_MESSAGE, blocked_by=reason)
-    cleaned, pii_found = detect_pii(request.question)
+    with _tracer.start_as_current_span("query_request") as root:
+        root.set_attribute("openinference.span.kind", "CHAIN")
+        root.set_attribute("request.top_k", request.top_k)
 
-    if cached := cache_lookup(cleaned):
-        return _annotate_pii(cached, pii_found)
+        with _tracer.start_as_current_span("input_guards") as span:
+            if reason := detect_prompt_injection(request.question):
+                span.set_attribute("guard.blocked_by", reason)
+                return _finish(root, _safe_response(SAFE_BLOCKED_MESSAGE, blocked_by=reason))
+            cleaned, pii_found = detect_pii(request.question)
+            span.set_attribute("guard.pii_found", ",".join(pii_found))
+        root.set_attribute("input.value", cleaned)
 
-    response = route_query(cleaned, top_k=request.top_k)
+        with _tracer.start_as_current_span("cache_lookup") as span:
+            cached = cache_lookup(cleaned)
+            span.set_attribute("cache.hit", cached is not None)
+        if cached:
+            return _finish(root, _annotate_pii(cached, pii_found))
 
-    if reason := check_hallucination(response.answer, response.sources):
-        return _safe_response(SAFE_FILTERED_MESSAGE, blocked_by=reason)
-    if reason := is_off_topic(response.answer):
-        return _safe_response(SAFE_FILTERED_MESSAGE, blocked_by=reason)
+        response = route_query(cleaned, top_k=request.top_k)
 
-    cache_store(cleaned, response)
-    return _annotate_pii(response, pii_found)
+        with _tracer.start_as_current_span("output_guards") as span:
+            reason = check_hallucination(response.answer, response.sources)
+            if not reason:
+                reason = is_off_topic(response.answer)
+            if reason:
+                span.set_attribute("guard.blocked_by", reason)
+        if reason:
+            return _finish(root, _safe_response(SAFE_FILTERED_MESSAGE, blocked_by=reason))
+
+        with _tracer.start_as_current_span("cache_store"):
+            cache_store(cleaned, response)
+        return _finish(root, _annotate_pii(response, pii_found))
+
+
+def _finish(root, response: QueryResponse) -> QueryResponse:
+    """Record the outcome on the root span and stamp its trace ID on the response.
+
+    With no tracer provider (tests, ``TRACING_BACKEND=none``) the span
+    context is invalid and the response's existing ``trace_id`` is kept.
+    """
+    root.set_attribute("output.value", response.answer)
+    root.set_attribute("response.model", response.model)
+    root.set_attribute("response.cached", response.cached)
+    if response.blocked_by:
+        root.set_attribute("response.blocked_by", response.blocked_by)
+    ctx = root.get_span_context()
+    if ctx is not None and ctx.is_valid:
+        return response.model_copy(update={"trace_id": format(ctx.trace_id, "032x")})
+    return response
 
 
 @router.get("/health")

@@ -32,6 +32,156 @@ def _safe_int(value: Any) -> int:
     return int(f)
 
 
+# Request-level tracing (src/gateway/routes.py): one `query_request` root per
+# POST /query, with a child span per pipeline stage. Traces recorded before
+# that change have `rag_query` as their root and use the original summary
+# logic below.
+REQUEST_ROOT = "query_request"
+STAGE_SPANS = (
+    "input_guards",
+    "cache_lookup",
+    "classification",
+    "retrieval",
+    "generation",
+    "output_guards",
+    "cache_store",
+)
+
+
+def _durations_ms(frame: Any) -> Any:
+    return (frame["end_time"] - frame["start_time"]).dt.total_seconds() * 1000
+
+
+def _attr(row: Any, namespace: str, key: str, default: Any = None) -> Any:
+    """Read ``<namespace>.<key>`` from a Phoenix span row.
+
+    Phoenix flattens custom attribute namespaces into one dict-valued
+    column (``attributes.<namespace>``); OpenInference ones such as
+    ``llm.token_count.prompt`` arrive as flat columns. Try both.
+    """
+    flat = row.get(f"attributes.{namespace}.{key}")
+    if flat is not None and not (isinstance(flat, float) and math.isnan(flat)):
+        return flat
+    nested = row.get(f"attributes.{namespace}")
+    if isinstance(nested, dict):
+        return nested.get(key, default)
+    return default
+
+
+def _summarize_request_trace(trace_id: Any, group: Any) -> dict:
+    """Summary for a `query_request` trace: full request latency + slowest stage."""
+    group = group.copy()
+    group["_dur_ms"] = _durations_ms(group)
+    root_row = group[group["name"] == REQUEST_ROOT].iloc[0]
+    total_ms = float(root_row["_dur_ms"])
+    stages = group[group["name"].isin(STAGE_SPANS)]
+    if len(stages) > 0:
+        slowest = stages.loc[stages["_dur_ms"].idxmax()]
+        slowest_name, slowest_ms = str(slowest["name"]), float(slowest["_dur_ms"])
+    else:
+        slowest_name, slowest_ms = "—", 0.0
+    gen = group[group["name"] == "generation"]
+    gen_row = gen.iloc[0] if len(gen) else None
+    question = root_row.get("attributes.input.value")
+    return {
+        "trace_id": str(trace_id)[:8],
+        "question": str(question if isinstance(question, str) else "—")[:80],
+        "model": str(_attr(root_row, "response", "model", "—")),
+        "latency_ms": round(total_ms, 1),
+        "prompt_tokens": _safe_int(_attr(gen_row, "generation", "prompt_tokens", 0)) if gen_row is not None else 0,
+        "completion_tokens": _safe_int(_attr(gen_row, "generation", "completion_tokens", 0)) if gen_row is not None else 0,
+        "slowest_span": slowest_name,
+        "slowest_ms": round(slowest_ms, 1),
+        "slowest_pct": round(slowest_ms / total_ms * 100, 1) if total_ms else 0.0,
+        "start_time": str(root_row.get("start_time", "")),
+    }
+
+
+def _span_details(row: Any) -> str:
+    """One-line description of a span for the trace tree."""
+    name = row["name"]
+    if name == "ChatCompletion":
+        return (f"{_attr(row, 'llm', 'model_name', '?')}, "
+                f"{_safe_int(_attr(row, 'llm', 'token_count.prompt', 0))} prompt + "
+                f"{_safe_int(_attr(row, 'llm', 'token_count.completion', 0))} completion tokens")
+    if name == "CreateEmbeddings":
+        return f"{_attr(row, 'embedding', 'model_name', '')}".strip()
+    if name == "classification":
+        return f"query_type={_attr(row, 'classification', 'query_type')} → {_attr(row, 'classification', 'model')}"
+    if name == "retrieval":
+        docs = row.get("attributes.retrieval.documents")
+        ids = []
+        if isinstance(docs, (list, tuple)) or hasattr(docs, "tolist"):
+            for d in list(docs):
+                doc = d.get("document", d) if isinstance(d, dict) else {}
+                if isinstance(doc, dict) and doc.get("id"):
+                    ids.append(str(doc["id"]))
+        top_k = _attr(row, "retrieval", "top_k")
+        return f"top_k={top_k}" + (f": {', '.join(ids)}" if ids else "")
+    if name == "generation":
+        return (f"{_attr(row, 'generation', 'model')}, "
+                f"{_safe_int(_attr(row, 'generation', 'prompt_tokens', 0))} prompt + "
+                f"{_safe_int(_attr(row, 'generation', 'completion_tokens', 0))} completion tokens")
+    if name == "cache_lookup":
+        return "hit" if _attr(row, "cache", "hit") else "miss"
+    if name in ("input_guards", "output_guards"):
+        blocked = _attr(row, "guard", "blocked_by")
+        return f"blocked: {blocked}" if blocked else "passed"
+    if name == "rag_generation":
+        return "attribute marker (model, tokens, cost); not a timed step"
+    return ""
+
+
+def render_trace_tree(df: Any, trace_id_prefix: str) -> str:
+    """Render one trace as a markdown span tree with per-span latency share."""
+    if df is None or len(df) == 0:
+        return "No spans found.\n"
+    matches = df[df["context.trace_id"].astype(str).str.startswith(trace_id_prefix)]
+    if len(matches) == 0:
+        return f"No trace found with ID starting `{trace_id_prefix}`.\n"
+    trace_id = str(matches["context.trace_id"].iloc[0])
+    group = matches[matches["context.trace_id"] == trace_id].copy()
+    group["_dur_ms"] = _durations_ms(group)
+    roots = group[group["parent_id"].isna()]
+    root = roots.iloc[0]
+    total_ms = float(root["_dur_ms"])
+
+    children: dict = {}
+    for _, row in group.sort_values("start_time").iterrows():
+        children.setdefault(row["parent_id"], []).append(row)
+    ordered: list[tuple[int, Any]] = []
+
+    def walk(row: Any, depth: int) -> None:
+        ordered.append((depth, row))
+        for child in children.get(row["context.span_id"], []):
+            walk(child, depth + 1)
+
+    walk(root, 0)
+    question = root.get("attributes.input.value")
+    lines = [
+        f"# Phoenix trace `{trace_id}`",
+        "",
+        f"- Question: {question if isinstance(question, str) else '—'}",
+        f"- Model: {_attr(root, 'response', 'model', '—')}",
+        f"- Request latency (root span `{root['name']}`): {total_ms:,.1f} ms",
+        f"- Spans in trace: {len(group)}",
+        "",
+        "| Span | Kind | Duration (ms) | % of request | Details |",
+        "|---|---|---:|---:|---|",
+    ]
+    for depth, row in ordered:
+        label = ("&nbsp;&nbsp;&nbsp;&nbsp;" * depth) + ("└ " if depth else "") + f"`{row['name']}`"
+        kind = row.get("span_kind") or _attr(row, "openinference", "span.kind", "")
+        pct = row["_dur_ms"] / total_ms * 100 if total_ms else 0.0
+        lines.append(f"| {label} | {kind} | {row['_dur_ms']:,.1f} | {pct:.1f}% | {_span_details(row)} |")
+    stages = group[group["name"].isin(STAGE_SPANS)]
+    if len(stages) > 0:
+        s = stages.loc[stages["_dur_ms"].idxmax()]
+        lines += ["", f"Slowest stage: `{s['name']}`, {s['_dur_ms']:,.1f} ms = "
+                      f"{s['_dur_ms'] / total_ms * 100:.1f}% of the {total_ms:,.1f} ms request."]
+    return "\n".join(lines) + "\n"
+
+
 def summarize_traces(df: Any, last_n: int) -> list[dict]:
     """Group spans by trace_id, return one summary dict per trace.
 
@@ -44,6 +194,9 @@ def summarize_traces(df: Any, last_n: int) -> list[dict]:
 
     summaries: list[dict] = []
     for trace_id, group in df.groupby("context.trace_id"):
+        if (group["name"] == REQUEST_ROOT).any():
+            summaries.append(_summarize_request_trace(trace_id, group))
+            continue
         root = group[group["name"] == "rag_query"]
         if len(root) == 0:
             root = group[group["parent_id"].isna()]
@@ -133,7 +286,9 @@ def render_markdown(summaries: list[dict], total: int) -> str:
             f"| {i} | `{s['trace_id']}` | {s['question']} | "
             f"{s['model']} | {s['latency_ms']} | "
             f"{s['prompt_tokens']} | {s['completion_tokens']} | "
-            f"{s['slowest_span']} | {s['slowest_ms']} |"
+            f"{s['slowest_span']} | {s['slowest_ms']}"
+            + (f" ({s['slowest_pct']}% of request)" if 'slowest_pct' in s else "")
+            + " |"
         )
     return "\n".join(lines) + "\n"
 
