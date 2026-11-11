@@ -1,0 +1,17 @@
+{
+  "product_id": "prod_032",
+  "name": "ThirdShotHub Cold Court 40 Outdoor Pickleballs",
+  "category": "balls",
+  "brand": "ThirdShotHub",
+  "price": 18.99,
+  "description": "ThirdShotHub Cold Court 40 balls are built for winter and early-morning outdoor play. Standard outdoor balls turn brittle and crack quickly when temperatures drop below 50°F; the Cold Court 40 uses a softer TPE polymer blend that stays flexible down to 35°F, keeping bounce consistent and resisting cracks in cold weather. The 40-hole pattern is tuned for wind resistance on open courts.",
+  "specifications": {
+    "hole_count": 40,
+    "weight": "0.92 oz",
+    "material": "Cold-weather TPE polymer blend",
+    "color": "Optic yellow",
+    "pack_size": 6,
+    "temperature_range": "Rated for play from 35°F to 75°F"
+  },
+  "care_instructions": "Store balls indoors at room temperature between sessions and bring them to the court in a bag to slow cooling. Replace a ball once it goes out of round or starts to crack."
+}
