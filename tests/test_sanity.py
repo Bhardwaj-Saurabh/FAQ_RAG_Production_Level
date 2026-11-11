@@ -1,11 +1,7 @@
-"""Proves the toolchain works before any real code exists."""
+"""Proves the package installs and imports before any real code exists."""
 
-import chromadb
-import fastapi
-import openai
+import faq_service
 
 
-def test_core_dependencies_import():
-    assert fastapi.__version__
-    assert openai.__version__
-    assert chromadb.__version__
+def test_package_imports_with_version() -> None:
+    assert faq_service.__version__ == "0.1.0"

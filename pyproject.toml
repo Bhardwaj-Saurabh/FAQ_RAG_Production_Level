@@ -1,29 +1,52 @@
 [project]
-name = "thirdshothub-faq"
+name = "faq-service"
 version = "0.1.0"
-description = "Production-style RAG FAQ service for ThirdShotHub"
+description = "Production RAG FAQ service for ThirdShotHub"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi>=0.111,<1",
     "uvicorn[standard]>=0.30,<1",
     "pydantic>=2.7,<3",
     "pydantic-settings>=2.3,<3",
-    "python-dotenv>=1.0,<2",
     "openai>=1.30,<3",
-    "chromadb>=0.5,<1",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.2,<9",
     "httpx>=0.27,<1",
+    "ruff>=0.6,<1",
+    "mypy>=1.11,<2",
 ]
 
-[tool.uv]
-# This is an app, not a library: uv installs the dependencies only.
-package = false
+# A real build backend makes `faq_service` an installed package, so imports
+# work from any directory (no PYTHONPATH hacks like v1 needed).
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/faq_service"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Lets tests write `from src.config import settings`.
-pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes: unused imports, undefined names
+    "I",       # import sorting
+    "B",       # bugbear: likely bugs
+    "UP",      # pyupgrade: modern syntax
+    "SIM",     # simplifications
+    "ASYNC",   # blocking calls inside async functions (a v1 problem)
+]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+files = ["src", "tests"]
