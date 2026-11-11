@@ -8,10 +8,11 @@ __pycache__/
 .venv/
 .pytest_cache/
 
-# Local on-disk data stores written by the starter at runtime
+# Local on-disk data stores written by the starter at runtime.
+# data/cost_log.jsonl is tracked on purpose: it is the canonical cost log
+# behind the Deliverable 8 evidence (96 entries, frozen 11 Nov 2026).
 data/chroma/
 data/phoenix/
-data/cost_log.jsonl
 
 # Runtime inbox: ignore files dropped into data/inbox/ during dry runs.
 # data/inbox/failed/ is tracked on purpose: it holds the watcher's
