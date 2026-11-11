@@ -28,8 +28,11 @@ WRITEUP-evidence/
 # Local Claude state
 .claude/
 
-.env
-
-
 # Local binaries
 bin/
+
+# Editor, log and archive files (never part of the submission)
+.vscode/
+.idea/
+*.log
+*.zip
