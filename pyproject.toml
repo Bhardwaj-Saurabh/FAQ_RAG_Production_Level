@@ -1,0 +1,29 @@
+[project]
+name = "thirdshothub-faq"
+version = "0.1.0"
+description = "Production-style RAG FAQ service for ThirdShotHub"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "fastapi>=0.111,<1",
+    "uvicorn[standard]>=0.30,<1",
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.3,<3",
+    "python-dotenv>=1.0,<2",
+    "openai>=1.30,<3",
+    "chromadb>=0.5,<1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2,<9",
+    "httpx>=0.27,<1",
+]
+
+[tool.uv]
+# This is an app, not a library: uv installs the dependencies only.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Lets tests write `from src.config import settings`.
+pythonpath = ["."]
