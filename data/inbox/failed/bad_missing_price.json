@@ -1,0 +1,17 @@
+{
+  "product_id": "prod_bad_missing_price",
+  "name": "ThirdShotHub Towel Without Price",
+  "category": "accessories",
+  "brand": "ThirdShotHub",
+  "description": "The ThirdShotHub Court Chill Cooling Towel keeps you cool between games on hot days. Soak it, wring it out and snap it, and the mesh fabric cools by evaporation for up to two hours. Drape it over your neck at changeovers; re-wet it to reactivate.",
+  "specifications": {
+    "material": "Polyester-nylon evaporative mesh",
+    "dimensions": "40 x 12 in",
+    "cooling_duration": "Up to 2 hours per soak",
+    "colors": [
+      "Court Blue",
+      "Volt Yellow"
+    ]
+  },
+  "care_instructions": "Rinse after use and air-dry. Machine wash cold in a laundry bag; no bleach or fabric softener."
+}

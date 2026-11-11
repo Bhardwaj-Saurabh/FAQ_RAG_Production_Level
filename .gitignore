@@ -13,10 +13,11 @@ data/chroma/
 data/phoenix/
 data/cost_log.jsonl
 
-# Runtime inbox — file-watcher input + quarantine. Keep the directory
-# (via .gitkeep) but ignore any fixtures dropped in during dry runs.
+# Runtime inbox: ignore files dropped into data/inbox/ during dry runs.
+# data/inbox/failed/ is tracked on purpose: it holds the watcher's
+# quarantined files and .error.txt diagnostics, which are Deliverable 4
+# evidence and must ship with the submission.
 data/inbox/*.json
-data/inbox/failed/
 
 # Operator runtime artifacts from `make harvest-evidence`
 WRITEUP-draft.md
