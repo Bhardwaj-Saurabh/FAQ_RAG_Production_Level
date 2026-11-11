@@ -8,15 +8,16 @@ semantic cache, a `gpt-4o-mini` classifier that routes each question to
 generation, and an LLM-judge output guard. Every request is traced in
 Phoenix and costed in `data/cost_log.jsonl`. Each section below covers
 one rubric deliverable with the evidence inline. All outputs come from
-real runs against the live service between 5 and 10 November 2026.
+real runs against the live service between 5 and 11 November 2026.
 
 ## Setup snapshot
 
 - Python: 3.11.4 (`uv run python --version`)
 - Branch / commit: `main` at
-  https://github.com/Bhardwaj-Saurabh/FAQ_RAG_Production_Level. Tests and
-  verification ran at `a267629`; later commits change only `WRITEUP.md`.
-- Test suite: `make test` → `248 passed, 26 warnings in 1.30s`
+  https://github.com/Bhardwaj-Saurabh/FAQ_RAG_Production_Level. The code
+  is as of commit `b2d249f` (request-level tracing); later commits add
+  evidence files and the writeup only.
+- Test suite: `make test` → `255 passed, 26 warnings in 1.34s`
 - Verify: `make verify` → `Automated: 4 passed, 0 failed`
 
 ## Substitutions from the proposal
@@ -448,7 +449,10 @@ curl -X POST http://localhost:8080/query \
 
 - **Quarantined failures.**
 
-  Each bad file moved to `data/inbox/failed/` with a sibling `.error.txt`:
+  Each bad file moved to `data/inbox/failed/` with a sibling `.error.txt`.
+  These are the watcher's actual output and are included in the
+  repository and the submission ZIP (all three pairs, byte-for-byte as the
+  watcher left them on 10 November):
 
   | File | What's wrong | `.error.txt` |
   |---|---|---|
@@ -686,7 +690,7 @@ curl -X POST http://localhost:8080/query \
 ```
 
 **Output guard (hallucination judge) observed on the live route.** Two of
-the twelve Deliverable 7 requests were blocked by the LLM judge:
+the twelve Deliverable 7 questions were blocked by the LLM judge:
 
 - "How many balls are in a pack of Onix Pure 2 Indoor Pickleballs?" →
   `blocked_by: "hallucination: The source states the Onix Pure 2 Indoor
@@ -699,10 +703,16 @@ the twelve Deliverable 7 requests were blocked by the LLM judge:
   "Sunset Pink"]`, and that chunk was in the text sent to the judge. The
   `gpt-4o-mini` judge misread it.
 
+When I re-ran the same twelve questions after the Deliverable 7
+instrumentation change, the judge blocked the same two again, this time
+saying "The color 'Ocean Blue' is not listed in the source", so the skort
+false positive is reproducible, not a one-off.
+
 So the judge is not perfect on live traffic, despite FPR = 0.00 on the
 golden cohort. Together with the BanTopics false positive in
-Deliverable 4, that is two legitimate answers blocked by output guards
-across roughly 30 live queries. Both failures are fail-safe (the customer
+Deliverable 4, that is two different legitimate questions wrongly
+blocked by output guards during this project's live testing (the skort
+question twice). Both failures are fail-safe (the customer
 gets a refusal, not wrong information), but each costs a real answer.
 
 ## Deliverable 7 — Distributed Tracing
@@ -713,114 +723,152 @@ gets a refusal, not wrong information), but each costs a real answer.
 > markdown; name the slowest pipeline step and quantify it as a
 > fraction of total request latency.
 
-**Summary.** Twelve new questions produced twelve Phoenix traces. Answer generation is the slowest step in every trace: 2,218 ms on average, 77% of the traced pipeline and 27% of the full 8.3 s request. The three LLM calls together (classifier, generation, judge) take 68% of each request; the Chroma search is under 1%.
+**Summary.** I changed the instrumentation so each `POST /query` produces
+one trace with every stage connected: a `query_request` root span with
+`input_guards`, `cache_lookup`, `classification`, `rag_query` (containing
+`retrieval` and `generation`), `output_guards` and `cache_store` beneath it.
+I then re-ran the same 12 questions. In the expanded trace, `b23724bf`,
+generation is the slowest stage at 4,396 ms, or **38.6% of the 11,382 ms
+request**. Across all 12 requests, generation (25.7% of request time) and
+the hallucination judge (25.4%) take the most time, and the three LLM calls
+together take 68% of each request.
 
-- **Trace evidence.** I sent 12 new questions (none asked earlier the same day, so none
-  could hit the semantic cache) to `POST /query` with `make serve`
-  running: 7 routed to `gpt-4o-mini` and 5 to `gpt-4o`. This is the
-  `make show-traces` table for those 12 requests. A plain
-  `make show-traces` also lists the classifier, judge and embedding
-  calls, because Phoenix records each OpenAI call made outside
-  `rag_query` as its own trace; I kept only the traces with a
-  `rag_query` root, the same filter `make seed-traces` applies.
+**What changed in the instrumentation.** Before, the outermost span was
+`rag_query`, which wraps only retrieval and generation. Classification
+(`src/gateway/router.py`) ran before it, and the guards, cache and judge ran
+outside it, so Phoenix recorded each of their OpenAI calls as a separate
+trace. Now:
+
+- `src/gateway/routes.py` opens a `query_request` root span for the whole
+  handler, with a child span per stage. Every response, including blocked
+  and cached ones, returns that root span's trace ID. Only the
+  PII-redacted question is recorded on the span.
+- `src/gateway/router.py` wraps classification in a `classification` span
+  that records the chosen `query_type` and model.
+- `src/rag/pipeline.py` wraps retrieval and generation in `retrieval` and
+  `generation` spans (document IDs and scores, model, tokens, cost).
+- Because these spans are active when the OpenAI calls run, the
+  auto-instrumented `ChatCompletion` and `CreateEmbeddings` spans nest
+  under the stage that made them. OpenTelemetry carries the current span in
+  its context, so no IDs are passed by hand.
+- `make show-traces TRACE=<id>` prints one trace as a span tree with each
+  span's share of the request, and the summary table now reports the full
+  request latency for `query_request` traces.
+
+New tests (`tests/gateway/test_request_trace.py`) check that one request
+produces one trace containing every stage span, that the stage spans hang
+off the root, that the response carries the root trace ID, and that raw PII
+never reaches the span. Further tests in `tests/tracing/test_trace_export.py`
+cover the export.
+
+- **Trace evidence.** I sent the same 12 questions as before (7 routed to
+  `gpt-4o-mini`, 5 to `gpt-4o`; two answers were blocked by the
+  hallucination judge, see Deliverable 6). None hit the cache. Every
+  request produced exactly one trace (14 spans when the judge blocks and
+  `cache_store` is skipped, 16 otherwise). The mean root-span duration was
+  8,494 ms against 8,498 ms measured by curl, so the trace covers the whole
+  request.
+
+  Phoenix UI, project `llm-ops-capstone`, trace `b23724bf…` (the
+  hopper-versus-net comparison, routed to `gpt-4o`). `classification`,
+  `retrieval` and `generation` are labelled spans in the same trace,
+  alongside the guards and cache stages; the numbers beside the LLM and
+  embedding spans are token counts:
+
+  ![Phoenix trace b23724bf in project llm-ops-capstone: query_request root with input_guards, cache_lookup, classification, rag_query (retrieval, generation), output_guards and cache_store spans; latency 11.3 s](writeup-assets/phoenix_trace.png)
+
+  The same trace exported as markdown, with per-span latency and share of
+  the request:
+
+**`make show-traces TRACE=b23724bf`** — Phoenix trace `b23724bfe79405904b0f71586583fd20`
+
+- Question: Compare the Gamma Hi-Rise Ball Hopper and the PBPro Portable Net System for someone setting up a home court.
+- Model: gpt-4o
+- Request latency (root span `query_request`): 11,382.2 ms
+- Spans in trace: 16
+
+| Span | Kind | Duration (ms) | % of request | Details |
+|---|---|---:|---:|---|
+| `query_request` | CHAIN | 11,382.2 | 100.0% |  |
+| &nbsp;&nbsp;&nbsp;&nbsp;└ `input_guards` | UNKNOWN | 653.6 | 5.7% | passed |
+| &nbsp;&nbsp;&nbsp;&nbsp;└ `cache_lookup` | UNKNOWN | 620.0 | 5.4% | miss |
+| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└ `CreateEmbeddings` | EMBEDDING | 591.0 | 5.2% | text-embedding-3-small |
+| &nbsp;&nbsp;&nbsp;&nbsp;└ `classification` | CHAIN | 1,582.9 | 13.9% | query_type=complex → gpt-4o |
+| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└ `ChatCompletion` | LLM | 1,576.0 | 13.8% | gpt-4o-mini-2024-07-18, 159 prompt + 33 completion tokens |
+| &nbsp;&nbsp;&nbsp;&nbsp;└ `rag_query` | UNKNOWN | 5,043.0 | 44.3% |  |
+| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└ `retrieval` | RETRIEVER | 636.0 | 5.6% | top_k=5 |
+| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└ `CreateEmbeddings` | EMBEDDING | 618.3 | 5.4% | text-embedding-3-small |
+| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└ `generation` | CHAIN | 4,395.9 | 38.6% | gpt-4o, 1359 prompt + 400 completion tokens |
+| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└ `ChatCompletion` | LLM | 4,389.9 | 38.6% | gpt-4o-2024-08-06, 1359 prompt + 400 completion tokens |
+| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└ `rag_generation` | UNKNOWN | 0.0 | 0.0% | attribute marker (model, tokens, cost); not a timed step |
+| &nbsp;&nbsp;&nbsp;&nbsp;└ `output_guards` | UNKNOWN | 2,496.8 | 21.9% | passed |
+| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└ `ChatCompletion` | LLM | 1,853.0 | 16.3% | gpt-4o-mini-2024-07-18, 1538 prompt + 28 completion tokens |
+| &nbsp;&nbsp;&nbsp;&nbsp;└ `cache_store` | UNKNOWN | 963.5 | 8.5% |  |
+| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└ `CreateEmbeddings` | EMBEDDING | 938.3 | 8.2% | text-embedding-3-small |
+
+Slowest stage: `generation`, 4,395.9 ms = 38.6% of the 11,382.2 ms request.
+
+  `make show-traces` for all 12 requests (`scripts/show_traces.py --last 12`;
+  the plain `make show-traces` shows the 10 most recent). Latency is the
+  full request (`query_request` root); "Slowest child" is the slowest stage
+  span and its share of that request. The model is blank for the two
+  requests blocked by the hallucination judge:
 
 12 trace(s) captured. Showing the most recent 12.
 
 | # | Trace ID | Question | Model | Latency (ms) | Prompt tok | Compl. tok | Slowest child | Slowest (ms) |
 |---|---|---|---|---|---|---|---|---|
-| 1 | `7fe3cf01` | What colors does the Lija Rally Skort come in? | gpt-4o-mini | 2935.4 | 1246 | 27 | ChatCompletion | 2312.8 |
-| 2 | `3a4a868b` | I play in hot weather and sweat a lot. What grip and apparel would you recommend | gpt-4o | 3167.0 | 1237 | 239 | ChatCompletion | 2593.9 |
-| 3 | `2fe2c5ca` | What size is the Tourna Lead Tape Roll? | gpt-4o-mini | 2565.3 | 1618 | 44 | ChatCompletion | 1925.5 |
-| 4 | `86d6e235` | Which paddle in your catalog is best for a player who wants more spin and contro | gpt-4o | 3515.8 | 1518 | 216 | ChatCompletion | 2766.7 |
-| 5 | `a7a35c27` | How should I store the Selkirk Team Backpack? | gpt-4o-mini | 3103.1 | 1230 | 95 | ChatCompletion | 2513.9 |
-| 6 | `df7f9771` | What is the Diadem Warrior Performance Tee made of? | gpt-4o-mini | 2393.0 | 1356 | 29 | ChatCompletion | 1775.0 |
-| 7 | `09d0d939` | Compare the Gamma Hi-Rise Ball Hopper and the PBPro Portable Net System for some | gpt-4o | 4483.9 | 1359 | 375 | ChatCompletion | 3871.5 |
-| 8 | `592fd695` | How many balls are in a pack of Onix Pure 2 Indoor Pickleballs? | gpt-4o-mini | 2105.0 | 1216 | 23 | ChatCompletion | 1485.2 |
-| 9 | `dd5ea416` | Which court shoes would suit a player who needs extra cushioning for long sessio | gpt-4o | 2641.5 | 1289 | 107 | ChatCompletion | 2079.4 |
-| 10 | `e0edd94c` | What face material does the Chorus Shapeshifter SX use? | gpt-4o-mini | 2722.0 | 1792 | 48 | ChatCompletion | 2074.2 |
-| 11 | `12820c18` | How long is the handle on the JOOLA Ben Johns Perseus 3S 16mm? | gpt-4o-mini | 2320.9 | 1624 | 25 | ChatCompletion | 1619.7 |
-| 12 | `bfc10210` | What is the price of the HEAD Radical Tour paddle? | gpt-4o-mini | 2347.2 | 1548 | 15 | ChatCompletion | 1601.5 |
-
-  Raw `make show-traces` output, taken straight after the 12 requests. It
-  lists the 10 most recent traces of any kind, so classifier, judge and
-  embedding calls appear alongside the two most recent request traces
-  (`7fe3cf01` and `3a4a868b`, both also in the table above):
-
-```
-# Phoenix Trace Export
-
-79 trace(s) captured. Showing the most recent 10.
-
-| # | Trace ID | Question | Model | Latency (ms) | Prompt tok | Compl. tok | Slowest child | Slowest (ms) |
-|---|---|---|---|---|---|---|---|---|
-| 1 | `4eba7bf7` | {"messages": [{"role": "user", "content": "You are a fact-checking judge for a c | — | 0.0 | 0 | 0 | ChatCompletion | 1677.7 |
-| 2 | `7fe3cf01` | What colors does the Lija Rally Skort come in? | gpt-4o-mini | 2935.4 | 1246 | 27 | ChatCompletion | 2312.8 |
-| 3 | `905e0108` | {"messages": [{"role": "user", "content": "Classify the following customer query | — | 0.0 | 0 | 0 | ChatCompletion | 1588.9 |
-| 4 | `0118f38e` | {"input": ["What colors does the Lija Rally Skort come in?"], "model": "text-emb | — | 0.0 | 0 | 0 | CreateEmbeddings | 645.5 |
-| 5 | `886b9f84` | {"input": ["I play in hot weather and sweat a lot. What grip and apparel would y | — | 0.0 | 0 | 0 | CreateEmbeddings | 1133.4 |
-| 6 | `eb979f25` | {"messages": [{"role": "user", "content": "You are a fact-checking judge for a c | — | 0.0 | 0 | 0 | ChatCompletion | 1810.6 |
-| 7 | `3a4a868b` | I play in hot weather and sweat a lot. What grip and apparel would you recommend | gpt-4o | 3167.0 | 1237 | 239 | ChatCompletion | 2593.9 |
-| 8 | `ea7b69ae` | {"messages": [{"role": "user", "content": "Classify the following customer query | — | 0.0 | 0 | 0 | ChatCompletion | 1635.0 |
-| 9 | `4e88d73e` | {"input": ["I play in hot weather and sweat a lot. What grip and apparel would y | — | 0.0 | 0 | 0 | CreateEmbeddings | 717.5 |
-| 10 | `c54a8692` | {"input": ["What size is the Tourna Lead Tape Roll?"], "model": "text-embedding- | — | 0.0 | 0 | 0 | CreateEmbeddings | 626.8 |
-```
-
-  One trace expanded, `09d0d939…` (the hopper-versus-net comparison,
-  routed to `gpt-4o`):
-
-  | Span | Parent | Duration (ms) |
-  |---|---|---:|
-  | `rag_query` | root | 4,488.4 |
-  | `CreateEmbeddings` (query embedding for retrieval) | `rag_query` | 595.2 |
-  | `ChatCompletion` (answer generation) | `rag_query` | 3,871.5 |
-  | `rag_generation` (attribute marker) | `rag_query` | 0.1 |
-
-  The Chroma search isn't instrumented; it is the remaining ~22 ms of
-  `rag_query`. `rag_generation` is created after the answer returns, to
-  record model, tokens and cost, so its duration is ~0. The real
-  generation time is the `ChatCompletion` span.
-
-  **What the trace does not cover.** `rag_query` wraps only retrieval
-  and generation. The input guards, the cache lookup, the classifier and
-  the hallucination judge run outside it, so I matched every span to its
-  request by time window and compared against the measured HTTP latency.
-  Means over all 12 requests:
-
-  | Step | Mean (ms) | Share of HTTP request |
-  |---|---:|---:|
-  | **Generation (`ChatCompletion` in `rag_query`)** | **2,218** | **27%** |
-  | Classifier call (`gpt-4o-mini`) | 1,743 | 21% |
-  | Hallucination-judge call (`gpt-4o-mini`) | 1,729 | 21% |
-  | Cache lookup + store embeddings | 1,274 | 15% |
-  | Retrieval query embedding | 621 | 7% |
-  | Chroma search | ~24 | <1% |
-  | ML input guards, framework, other | 728 | 9% |
-  | **Total HTTP request** | **8,336** | 100% |
+| 1 | `bb78d022` | What colors does the Lija Rally Skort come in? |  | 6672.3 | 1246 | 26 | classification | 2068.6 (31.0% of request) |
+| 2 | `2a064dd0` | I play in hot weather and sweat a lot. What grip and apparel would you recommend | gpt-4o | 8868.1 | 1237 | 232 | generation | 3050.2 (34.4% of request) |
+| 3 | `75e80803` | What size is the Tourna Lead Tape Roll? | gpt-4o-mini | 7730.5 | 1618 | 39 | output_guards | 2039.6 (26.4% of request) |
+| 4 | `04a96bfd` | Which paddle in your catalog is best for a player who wants more spin and contro | gpt-4o | 10034.5 | 1518 | 211 | generation | 3131.9 (31.2% of request) |
+| 5 | `4a97701d` | How should I store the Selkirk Team Backpack? | gpt-4o-mini | 7872.2 | 1230 | 85 | generation | 2093.2 (26.6% of request) |
+| 6 | `95d6377e` | What is the Diadem Warrior Performance Tee made of? | gpt-4o-mini | 7585.6 | 1356 | 28 | classification | 1933.5 (25.5% of request) |
+| 7 | `b23724bf` | Compare the Gamma Hi-Rise Ball Hopper and the PBPro Portable Net System for some | gpt-4o | 11382.2 | 1359 | 400 | generation | 4395.9 (38.6% of request) |
+| 8 | `5bdfdd73` | How many balls are in a pack of Onix Pure 2 Indoor Pickleballs? |  | 6839.0 | 1216 | 23 | output_guards | 1724.5 (25.2% of request) |
+| 9 | `fc6e074d` | Which court shoes would suit a player who needs extra cushioning for long sessio | gpt-4o | 9585.3 | 1289 | 117 | output_guards | 2826.5 (29.5% of request) |
+| 10 | `3a964b23` | What face material does the Chorus Shapeshifter SX use? | gpt-4o-mini | 7908.6 | 1792 | 48 | output_guards | 2252.8 (28.5% of request) |
+| 11 | `974da29d` | How long is the handle on the JOOLA Ben Johns Perseus 3S 16mm? | gpt-4o-mini | 8566.6 | 1624 | 24 | output_guards | 2844.6 (33.2% of request) |
+| 12 | `62220bda` | What is the price of the HEAD Radical Tour paddle? | gpt-4o-mini | 8884.7 | 1548 | 15 | output_guards | 1897.5 (21.4% of request) |
 
 - **Slowest step:**
-  - Step name: answer generation, the `ChatCompletion` span inside
-    `rag_query`. It is the slowest child span in all 12 traces.
-  - Latency: 2,218 ms on average (1,485–3,872 ms). 1,918 ms on
-    `gpt-4o-mini` requests and 2,828 ms on `gpt-4o` requests.
-  - Fraction of total request latency: **77% of the traced pipeline**
-    (2,218 of 2,863 ms in `rag_query`) and **27% of the end-to-end HTTP
-    request** (2,218 of 8,336 ms). In the expanded trace it is 86% of
-    `rag_query` and 33% of that 11.8 s request.
-  - Why it's the slowest: generation is the only step
-    that produces a long output token by token from a ~1,200–1,800-token
-    prompt (five full product chunks), and `gpt-4o` answers to complex
-    questions are both longer (up to 375 completion tokens) and slower per
-    token, so this one call outweighs any other single step.
+  - Step name: answer generation, the `generation` span (its child
+    `ChatCompletion` is the `gpt-4o` call).
+  - Latency: 4,395.9 ms in trace `b23724bf`.
+  - Fraction of total request latency: **38.6% of the 11,382.2 ms request**
+    (the `query_request` root span), more than any other stage. The next
+    slowest were the hallucination judge (`output_guards`, 21.9%) and
+    `classification` (13.9%).
+  - Why it's the slowest: this request was routed to `gpt-4o` and produced
+    the longest answer of the run (400 completion tokens from a
+    1,359-token prompt of five product chunks). Generation time grows with
+    output length, and `gpt-4o` is slower per token than `gpt-4o-mini`, so
+    this one call outweighs every other stage.
 
-  **Bottleneck beyond the single slowest span.** The three LLM calls
-  together (classifier, generation, judge) take 5.7 s, or 68% of each
-  request, and all OpenAI calls including embeddings take 91%. Retrieval
-  itself (Chroma) is negligible. The best latency gains would therefore
-  come from cutting calls rather than speeding up retrieval: run the
-  classifier and the cache-lookup embedding in parallel, reuse the
-  query embedding for both cache and retrieval (it is computed twice per
-  request), or skip the judge on cache hits and very short factual
-  answers.
+  **Across all 12 requests** (mean per request; each stage's time
+  includes its nested OpenAI calls):
+
+  | Stage | Mean (ms) | Share of request |
+  |---|---:|---:|
+  | `input_guards` (regex, DeBERTa, Presidio) | 385 | 4.5% |
+  | `cache_lookup` (query embedding) | 715 | 8.4% |
+  | `classification` (`gpt-4o-mini`) | 1,740 | 20.5% |
+  | `retrieval` (query embedding + Chroma) | 649 | 7.6% |
+  | **`generation`** | **2,181** | **25.7%** |
+  | `output_guards` (hallucination judge + BanTopics) | 2,159 | 25.4% |
+  | `cache_store` (embedding) | 632 | 7.4% |
+  | **`query_request` (whole request)** | **8,494** | 100% |
+
+  Generation varied from 1,536 to 4,396 ms. It was the slowest stage in 4
+  traces, the judge in 6 and classification in 2: with short
+  `gpt-4o-mini` answers, the judge, which reads the whole source text,
+  takes as long as generating the answer. The three LLM calls take 68% of
+  each request and the three embedding calls 23%, so 90% of request time is
+  OpenAI round trips; the Chroma search itself is under 1%. The biggest
+  latency gains would come from cutting calls rather than speeding up
+  retrieval: run the classifier and the cache-lookup embedding in parallel,
+  reuse one query embedding for the cache and retrieval (it is computed
+  twice), and skip the judge for very short factual answers.
 
 ## Deliverable 8 — Cost Monitoring, Per-Tier Summary, and Savings
 
@@ -830,97 +878,102 @@ gets a refusal, not wrong information), but each costs a real answer.
 > log); `make cost-report` output with absolute savings, percentage
 > savings, **and a named baseline model**.
 
-**Summary.** The cost log holds 66 real entries from this project's queries. `make cost-report` reports $0.1823 (68.8%) saved against a `gpt-4o` baseline. Excluding the judge calls, which run on `gpt-4o-mini` either way, and adding the unlogged classifier cost, routing itself saved about 48%.
+**Summary.** The submission includes the cost log itself,
+`data/cost_log.jsonl`: 96 real entries from this project's live queries
+between 5 and 11 November 2026, with no seeded rows. Every figure in this
+section, including the dashboard screenshot, the excerpt and the cost
+report, was produced from that exact file. `make cost-report` reports
+$0.2747 (71.1%) saved against a `gpt-4o` baseline. Excluding the judge
+calls, which run on `gpt-4o-mini` either way, and adding the unlogged
+classifier cost, routing itself saved about 52%.
 
 ### Part A — Cost log + dashboard
 
-- Total entries: `wc -l data/cost_log.jsonl` → **66**. These are all real
-  entries from the queries run for Deliverables 1–7 (5–10 Nov), so I did
-  not need `make seed-cost-log`. The log records answer generations
-  (`simple`/`complex`) and hallucination-judge calls; cache hits and
-  requests blocked by an input guard add no entry.
-- 5-line excerpt (lines 50–54; all three `query_type` values appear):
+- **The log:** `data/cost_log.jsonl`, included in the repository and the
+  submission ZIP. `wc -l data/cost_log.jsonl` → **96**. SHA-256
+  `1410c899d187f16e…`, unchanged while the report and screenshot below were
+  captured. Each answered request adds one `simple` or `complex` entry and
+  one `hallucination_check` entry (the judge call); cache hits and requests
+  blocked by an input guard add none.
+- 5-line excerpt (lines 92-96; all three `query_type` values appear):
 
 ```
-{"timestamp": "2026-11-10T23:34:22.114390+00:00", "model": "gpt-4o-mini", "prompt_tokens": 1183, "completion_tokens": 27, "cost_usd": 0.00019365, "query_type": "hallucination_check"}
-{"timestamp": "2026-11-10T23:34:28.323280+00:00", "model": "gpt-4o-mini", "prompt_tokens": 1216, "completion_tokens": 23, "cost_usd": 0.00019620000000000003, "query_type": "simple"}
-{"timestamp": "2026-11-10T23:34:30.399339+00:00", "model": "gpt-4o-mini", "prompt_tokens": 1023, "completion_tokens": 32, "cost_usd": 0.00017264999999999997, "query_type": "hallucination_check"}
-{"timestamp": "2026-11-10T23:34:38.604327+00:00", "model": "gpt-4o", "prompt_tokens": 1359, "completion_tokens": 375, "cost_usd": 0.0071475, "query_type": "complex"}
-{"timestamp": "2026-11-10T23:34:40.627709+00:00", "model": "gpt-4o-mini", "prompt_tokens": 1513, "completion_tokens": 23, "cost_usd": 0.00024075, "query_type": "hallucination_check"}
+{"timestamp": "2026-11-11T21:12:36.220306+00:00", "model": "gpt-4o-mini", "prompt_tokens": 1449, "completion_tokens": 28, "cost_usd": 0.00023415, "query_type": "hallucination_check"}
+{"timestamp": "2026-11-11T21:12:43.051409+00:00", "model": "gpt-4o", "prompt_tokens": 1237, "completion_tokens": 232, "cost_usd": 0.0054125, "query_type": "complex"}
+{"timestamp": "2026-11-11T21:12:44.690786+00:00", "model": "gpt-4o-mini", "prompt_tokens": 1253, "completion_tokens": 28, "cost_usd": 0.00020475, "query_type": "hallucination_check"}
+{"timestamp": "2026-11-11T21:12:51.205759+00:00", "model": "gpt-4o-mini", "prompt_tokens": 1246, "completion_tokens": 26, "cost_usd": 0.0002025, "query_type": "simple"}
+{"timestamp": "2026-11-11T21:12:52.814053+00:00", "model": "gpt-4o-mini", "prompt_tokens": 1063, "completion_tokens": 26, "cost_usd": 0.00017504999999999997, "query_type": "hallucination_check"}
 ```
 
-- `GET /cost-dashboard`:
+- `GET /cost-dashboard`, served from the same log:
 
-![Cost dashboard: 66 requests, $0.0828 total; gpt-4o 14 requests $0.0712; gpt-4o-mini 52 requests $0.0116](writeup-assets/cost_dashboard.png)
+![Cost dashboard: 96 requests, $0.1118 total; gpt-4o 18 requests $0.0943; gpt-4o-mini 78 requests $0.0175](writeup-assets/cost_dashboard.png)
 
 ### Part B — Per-tier summary
 
 | Model tier | Query count | Avg cost / query (USD) |
 |------------|------------:|-----------------------:|
-| gpt-4o-mini | 52 | $0.0002 |
-| gpt-4o | 14 | $0.0051 |
-| judge calls (`gpt-4o-mini`, within the row above) | 33 | $0.000211 |
+| gpt-4o-mini | 78 | $0.0002 |
+| gpt-4o | 18 | $0.0052 |
+| judge calls (`gpt-4o-mini`, within the row above) | 48 | $0.000212 |
 
-The first two rows are the `make cost-report` per-tier summary.
-
-`make cost-report` groups by model, so its `gpt-4o-mini` row (N=52)
-includes the 33 judge calls, which also run on `gpt-4o-mini`. Split by
-`query_type` from the same log:
+The first two rows are the `make cost-report` per-tier summary. Its
+`gpt-4o-mini` row (N=78) includes the 48 judge calls, which also run on
+`gpt-4o-mini`. Split by `query_type` from the same log:
 
 | Model | `query_type` | Count | Avg cost / query (USD) | Total (USD) |
 |---|---|---:|---:|---:|
-| gpt-4o | complex | 14 | $0.005085 | $0.0712 |
-| gpt-4o-mini | simple | 19 | $0.000246 | $0.0047 |
-| gpt-4o-mini | hallucination_check | 33 | $0.000211 | $0.0070 |
+| gpt-4o | complex | 18 | $0.005239 | $0.0943 |
+| gpt-4o-mini | simple | 30 | $0.000245 | $0.0074 |
+| gpt-4o-mini | hallucination_check | 48 | $0.000212 | $0.0102 |
 
 A `gpt-4o` answer costs about 21 times a `gpt-4o-mini` answer, mostly
-because of price (16.7× per token) and partly because complex answers
-are longer.
+because of price (16.7× per token) and partly because complex answers are
+longer.
 
 ### Part C — Savings vs. baseline
 
-`scripts/cost_report.py` output:
+`make cost-report` output (`scripts/cost_report.py` against
+`data/cost_log.jsonl`):
 
 ```
-Records:           66
-Actual cost:       $0.0828
-Baseline (gpt-4o): $0.2651
-Savings:           $0.1823 (68.8%)
+Records:           96
+Actual cost:       $0.1118
+Baseline (gpt-4o): $0.3866
+Savings:           $0.2747 (71.1%)
 
 Per-tier summary:
-  gpt-4o       N=  14  avg=$0.0051/query  total=$0.0712
-  gpt-4o-mini  N=  52  avg=$0.0002/query  total=$0.0116
+  gpt-4o       N=  18  avg=$0.0052/query  total=$0.0943
+  gpt-4o-mini  N=  78  avg=$0.0002/query  total=$0.0175
 ```
 
-- **Baseline model used:** gpt-4o (`Baseline (gpt-4o): $0.2651`)
-- **Absolute savings:** $0.1823
-- **Percentage savings:** 68.8 %
-- **Interpretation:** routing 19 of the 33 answered questions
-  (58%) to `gpt-4o-mini` saves money, but the 14 complex questions still
-  account for 94% of answer spend, so savings come almost entirely from
-  the simple class and grow with its share of traffic.
+- **Baseline model used:** gpt-4o (`Baseline (gpt-4o): $0.3866`)
+- **Absolute savings:** $0.2747
+- **Percentage savings:** 71.1 %
+- **Interpretation:** routing 30 of the 48 answered questions (62%) to
+  `gpt-4o-mini` saves money, but the 18 complex questions still account
+  for 93% of answer spend, so savings come almost entirely from the simple
+  class and grow with its share of traffic.
 
-**How much of the 68.8% is routing.** The cost report re-prices every
-log entry at `gpt-4o` rates, including the 33 judge calls. Those run on
-`gpt-4o-mini` whether or not routing is used, so about $0.11 of the
-headline savings comes from the judge, not from routing. The report
-also misses one routing cost: the classifier's `gpt-4o-mini` call is not
-written to the cost log. Phoenix recorded 16 classifier calls averaging
-151 prompt and 32 completion tokens, about $0.000042 each.
+**How much of the 71.1% is routing.** The cost report re-prices every log
+entry at `gpt-4o` rates, including the 48 judge calls. Those run on
+`gpt-4o-mini` whether or not routing is used, so $0.1595 of the headline
+savings comes from the judge, not from routing. The report also misses one
+routing cost: the classifier's `gpt-4o-mini` call is not written to the
+cost log. The 12 classifier calls in the Deliverable 7 traces averaged 151
+prompt and 33 completion tokens, about $0.000042 each.
 
 | Comparison | Baseline (gpt-4o) | Actual | Savings |
 |---|---:|---:|---:|
-| `make cost-report` (all 66 entries) | $0.2651 | $0.0828 | $0.1823 (68.8%) |
-| Answer generation only (33 routed requests) | $0.1492 | $0.0759 | $0.0733 (49.1%) |
-| Answer generation + classifier overhead (~$0.0014) | $0.1492 | $0.0773 | **$0.0720 (48.2%)** |
+| `make cost-report` (all 96 entries) | $0.3866 | $0.1118 | $0.2747 (71.1%) |
+| Answer generation only (48 routed requests) | $0.2169 | $0.1017 | $0.1152 (53.1%) |
+| Answer generation + classifier overhead (~$0.0020) | $0.2169 | $0.1037 | **$0.1132 (52.2%)** |
 
-So tiered routing itself saved about 48% on this traffic, and the
-classifier pays for itself many times over: it costs about $0.00004
-and saves about $0.0039 each time it sends a question to `gpt-4o-mini`
-instead of `gpt-4o`. This traffic was deliberately mixed for testing
-(42% complex). With the 70/20 simple/complex mix that
-`make seed-cost-log` assumes, the share of cheap answers is higher, so
-savings would be higher too.
+So tiered routing itself saved about 52% on this traffic, and the
+classifier pays for itself many times over: it costs about $0.00004 and
+saves about $0.0038 each time it sends a question to `gpt-4o-mini` instead
+of `gpt-4o`. This traffic was deliberately mixed for testing (38% complex);
+with a higher share of simple questions, savings would be higher.
 
 ## Deliverable 9 — Submission Quality
 
@@ -928,14 +981,19 @@ savings would be higher too.
 > deliverable in numeric order; `make test` ≥195 passing; `make verify`
 > 0 failed; no `.env` or API keys committed.
 
-**Summary.** The full suite passes (248 tests), `make verify` reports 0 failed checks, `.env` is not tracked, and the real API key appears nowhere in the repository's history.
+**Summary.** The full suite passes (255 tests, including new tests for
+request-level tracing), `make verify` reports 0 failed checks, `.env` is
+not tracked, and the real API key appears nowhere in the repository's
+history. The evidence files the writeup refers to ship with the
+submission: the quarantined inbox files, the cost log and both
+screenshots. I checked them in a freshly extracted copy of the final ZIP.
 
-- Tail of `make test`:
+- Tail of `make test` (on the final code, after the tracing change):
 
 ```
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-248 passed, 26 warnings in 1.30s
+255 passed, 26 warnings in 1.34s
 ```
 
 - Tail of `make verify`:
@@ -945,13 +1003,13 @@ savings would be higher too.
 Capstone verification — automated checks
 ======================================================================
 [+] unit-tests-pass
-    Unit tests: 248 passed, 26 warnings in 1.11s
+    Unit tests: 255 passed, 26 warnings in 1.13s
 [+] dependency-graph-forward-only
-    Forward-dependency graph: 4 passed in 0.03s
+    Forward-dependency graph: 4 passed in 0.04s
 [+] query-response-schema-complete
-    QueryResponse schema: 5 passed in 0.28s
+    QueryResponse schema: 5 passed in 0.30s
 [+] end-to-end-wiring
-    Cross-package end-to-end: 6 passed in 0.29s
+    Cross-package end-to-end: 6 passed in 0.33s
 
 ======================================================================
 Manual verification (requires running services + credentials)
@@ -982,10 +1040,29 @@ Manual: 12 items to verify in a real environment
   returns nothing): no real key is committed. That grep does print matches,
   but all are false positives: the placeholder
   `OPENAI_API_KEY=sk-your-openai-api-key` in `.env.example`, and anchor
-  links in `INSTRUCTIONS.md` such as `#task-1--populate…`, where `task-`
-  contains `sk-`. As a stronger check, I searched every diff in the full
-  history (`git log --all -p`) and every commit's tree for the actual key
-  value from my local `.env`: 0 occurrences.
+  links in `INSTRUCTIONS.md` (in the GitHub repository) such as
+  `#task-1--populate…`, where `task-` contains `sk-`. As a stronger check, I
+  searched every diff in the full history (`git log --all -p`) and every
+  commit's tree for the actual key value from my local `.env`: 0
+  occurrences.
+
+**Final archive audit.** Two evidence paths were previously excluded by
+`.gitignore` (`data/inbox/failed/` and `data/cost_log.jsonl`), so they were
+missing from a package built from tracked files. Both are now tracked
+deliberately, with comments in `.gitignore` saying why. I built the
+submission ZIP from the final commit, extracted it into an empty folder and
+checked in that copy that:
+
+| Check in the extracted ZIP | Result |
+|---|---|
+| `data/inbox/failed/` holds all three malformed files and their `.error.txt` files | present, byte-identical to the watcher's output |
+| Each `.error.txt` matches the diagnostic quoted in Deliverable 4 | all three match |
+| `data/cost_log.jsonl` exists with ≥ 50 entries | 96 entries |
+| `make cost-report` on the extracted log matches Deliverable 8 | `Records: 96`, `Baseline (gpt-4o): $0.3866`, `Savings: $0.2747 (71.1%)` |
+| The excerpt in Deliverable 8 is lines of that file | lines 92–96 match |
+| Screenshots referenced by the writeup exist | `writeup-assets/cost_dashboard.png`, `writeup-assets/phoenix_trace.png` |
+| `make test` / `make verify` from the extracted copy | 255 passed / 0 failed |
+| No `.env`, `.venv`, Chroma database or caches | none present |
 
 ---
 
@@ -1187,6 +1264,6 @@ questions, with retrieval inside both timers and streaming run first:
   runs the input guards and the classifier (about 1.7 s, from
   Deliverable 7) before the first token, so users wait longer than these
   pipeline-level numbers suggest. It also skips the hallucination judge
-  (about 1.7 s after generation on `/query`), which is a real part of its
+  (about 2.2 s after generation on `/query`), which is a real part of its
   speed advantage and a trade-off: streamed answers are not checked for
   unsupported claims before the customer sees them.
