@@ -7,6 +7,8 @@ __pycache__/
 *.py[cod]
 .venv/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Local on-disk data stores written by the starter at runtime.
 # data/cost_log.jsonl is tracked on purpose: it is the canonical cost log
