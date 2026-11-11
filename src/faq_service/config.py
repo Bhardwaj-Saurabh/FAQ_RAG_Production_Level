@@ -1,4 +1,4 @@
-"""Typed application settings, read from environment variables and `.env`.
+"""Typed application settings, read from environment variables (and `.env` in dev).
 
 Each service gets its own group with its own env prefix, so `OPENAI_API_KEY`
 fills `settings.openai.api_key` and `QDRANT_URL` fills `settings.qdrant.url`.
@@ -7,8 +7,16 @@ Groups for Redis and Postgres are added in the phases that introduce them.
 Settings are built once by `get_settings()` rather than at import time
 (v1 did `settings = Settings()` at module level), so a missing value fails
 at startup with a clear error, and tests can build their own instance.
+
+Where values come from, highest priority first:
+  1. real environment variables (Docker, CI and cloud set these)
+  2. the project's `.env` file, read only when APP_ENV is "dev" (the default)
+  3. the defaults below
+`.env` is found from the project root, not the current directory, and is
+skipped entirely in test/prod so a stray file can never override real secrets.
 """
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, TypeVar
@@ -19,16 +27,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 EnvFile = Path | str | None
 T = TypeVar("T", bound=BaseSettings)
 
+# src/faq_service/config.py -> parents[2] is the project root.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 class AppSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="APP_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="APP_", env_ignore_empty=True, extra="ignore")
 
     env: Literal["dev", "test", "prod"] = "dev"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
 
 class OpenAISettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="OPENAI_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="OPENAI_", env_ignore_empty=True, extra="ignore")
 
     # Required: there is no sensible default, so startup fails without it.
     # SecretStr keeps the key out of logs and reprs ("**********").
@@ -49,7 +60,7 @@ class OpenAISettings(BaseSettings):
 
 
 class QdrantSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="QDRANT_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="QDRANT_", env_ignore_empty=True, extra="ignore")
 
     url: str = "http://localhost:6333"
     # Only needed for Qdrant Cloud; the local container has no auth.
@@ -69,8 +80,19 @@ def _from_env(group: type[T], env_file: EnvFile) -> T:
     return group(_env_file=env_file)
 
 
-def load_settings(env_file: EnvFile = ".env") -> Settings:
-    """Build settings from the environment, plus `env_file` if given (None skips it)."""
+def default_env_file() -> Path | None:
+    """The `.env` to read: the project's in dev, none in test or prod.
+
+    The environment is decided by the real `APP_ENV` variable, never by the
+    file itself, so `.env` cannot switch itself on.
+    """
+    if (os.environ.get("APP_ENV") or "dev") != "dev":  # blank counts as unset
+        return None
+    return PROJECT_ROOT / ".env"
+
+
+def load_settings(env_file: EnvFile = None) -> Settings:
+    """Build settings from the environment, plus `env_file` if given."""
     return Settings(
         app=_from_env(AppSettings, env_file),
         openai=_from_env(OpenAISettings, env_file),
@@ -81,4 +103,4 @@ def load_settings(env_file: EnvFile = ".env") -> Settings:
 @lru_cache
 def get_settings() -> Settings:
     """The process-wide settings, built on first use."""
-    return load_settings()
+    return load_settings(default_env_file())
